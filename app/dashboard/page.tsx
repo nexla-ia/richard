@@ -1,20 +1,18 @@
 import { TrendingUp, ClipboardList, CreditCard, AlertCircle } from "lucide-react";
 import Link from "next/link";
-import { gestaoData, cobrancaData } from "@/lib/mock-data";
 
 function formatCurrency(v: number) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
 export default function DashboardPage() {
-  const totalGestao = gestaoData.reduce((acc, r) => acc + r.valor, 0);
+  const totalGestao   = 0;
+  const totalPago     = 0;
+  const totalPendente = 0;
+  const totalVencido  = 0;
 
-  const totalPago      = cobrancaData.filter((c) => c.status === "pago").reduce((acc, c) => acc + c.valor, 0);
-  const totalPendente  = cobrancaData.filter((c) => c.status === "pendente").reduce((acc, c) => acc + c.valor, 0);
-  const totalVencido   = cobrancaData.filter((c) => c.status === "vencido").reduce((acc, c) => acc + c.valor, 0);
-
-  const recentGestoes = [...gestaoData].sort((a, b) => b.data.localeCompare(a.data)).slice(0, 4);
-  const recentCobrancas = [...cobrancaData].sort((a, b) => b.vencimento.localeCompare(a.vencimento)).slice(0, 4);
+  const recentGestoes: { id: number; nome: string; valor: number; feito: string }[]   = [];
+  const recentCobrancas: { id: number; nome: string; valor: number; status: string; vencimento: string }[] = [];
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
