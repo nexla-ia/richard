@@ -1,20 +1,45 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { Clock, Calendar, Save, CheckCircle, Zap, MessageSquare } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Clock, Calendar, Save, CheckCircle, Zap, MessageSquare, Loader2 } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 const DIAS_RAPIDOS = [1, 5, 10, 15, 20, 25, 28];
 const HORAS_RAPIDAS = ["07:00", "08:00", "09:00", "10:00", "14:00", "18:00"];
+const MSG_PADRAO = "Olá {nome}! Sua cobrança de {valor} vence no dia {dia}. Por favor, realize o pagamento em dia!";
 
 export default function ConfiguracoesPage() {
+  const supabase = createClient();
+
   const [ativo, setAtivo] = useState(false);
   const [diaMes, setDiaMes] = useState(5);
   const [horario, setHorario] = useState("08:00");
-  const [mensagem, setMensagem] = useState(
-    "Olá {nome}! Sua cobrança de {valor} vence no dia {dia}. Por favor, realize o pagamento em dia!"
-  );
+  const [mensagem, setMensagem] = useState(MSG_PADRAO);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Carrega config salva ao montar
+  useEffect(() => {
+    async function load() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setLoading(false); return; }
+      const { data } = await supabase
+        .from("configuracoes")
+        .select("*")
+        .eq("user_id", user.id)
+        .single();
+      if (data) {
+        setAtivo(data.ativo);
+        setDiaMes(data.dia_mes);
+        setHorario(data.horario.slice(0, 5)); // "HH:MM:SS" → "HH:MM"
+        setMensagem(data.mensagem);
+      }
+      setLoading(false);
+    }
+    load();
+  }, []);
 
   function inserirVariavel(variavel: string) {
     const el = textareaRef.current;
@@ -27,7 +52,19 @@ export default function ConfiguracoesPage() {
     setTimeout(() => { el.focus(); el.setSelectionRange(start + variavel.length, start + variavel.length); }, 0);
   }
 
-  function salvar() {
+  async function salvar() {
+    setSaving(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from("configuracoes").upsert({
+        user_id: user.id,
+        ativo,
+        dia_mes: diaMes,
+        horario,
+        mensagem,
+      }, { onConflict: "user_id" });
+    }
+    setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   }
@@ -55,13 +92,16 @@ export default function ConfiguracoesPage() {
         </div>
         <button
           onClick={salvar}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shrink-0"
+          disabled={saving || loading}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.97] shrink-0"
           style={saved
             ? { background: "#4ade8020", color: "#4ade80", border: "1px solid #4ade8040" }
+            : saving || loading
+            ? { background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }
             : { background: "var(--color-brand)", color: "white" }}
         >
-          {saved ? <CheckCircle size={15} /> : <Save size={15} />}
-          {saved ? "Salvo!" : "Salvar"}
+          {saved ? <CheckCircle size={15} /> : saving || loading ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+          {saved ? "Salvo!" : saving ? "Salvando..." : loading ? "Carregando..." : "Salvar"}
         </button>
       </div>
 

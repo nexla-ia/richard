@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Send, Users, CheckCircle, Clock, MessageSquare,
   Loader2, DollarSign, AlertCircle, ChevronDown, ChevronUp,
+  Plus, X,
 } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 type Status = "pendente" | "cobrado" | "pago";
 
@@ -80,7 +82,32 @@ function Avatar({ nome }: { nome: string }) {
 type PageTab = "cobrancas" | "pagamentos";
 type ChargeMode = "individual" | "massa";
 
+const COUNTRIES = [
+  { flag: "🇧🇷", name: "Brasil",        code: "+55",  mask: "(##) #####-####",  max: 11 },
+  { flag: "🇵🇹", name: "Portugal",      code: "+351", mask: "### ### ###",       max: 9  },
+  { flag: "🇺🇸", name: "EUA",           code: "+1",   mask: "(###) ###-####",    max: 10 },
+  { flag: "🇦🇷", name: "Argentina",     code: "+54",  mask: "## ####-####",      max: 10 },
+  { flag: "🇨🇱", name: "Chile",         code: "+56",  mask: "# ####-####",       max: 9  },
+  { flag: "🇨🇴", name: "Colômbia",      code: "+57",  mask: "### ###-####",      max: 10 },
+  { flag: "🇲🇽", name: "México",        code: "+52",  mask: "## ####-####",      max: 10 },
+  { flag: "🇵🇾", name: "Paraguai",      code: "+595", mask: "### ###-###",       max: 9  },
+  { flag: "🇺🇾", name: "Uruguai",       code: "+598", mask: "### ##-##-##",      max: 9  },
+  { flag: "🇧🇴", name: "Bolívia",       code: "+591", mask: "########",          max: 8  },
+  { flag: "🇵🇪", name: "Peru",          code: "+51",  mask: "### ###-###",       max: 9  },
+  { flag: "🇪🇨", name: "Equador",       code: "+593", mask: "## ###-####",       max: 9  },
+  { flag: "🇬🇧", name: "Reino Unido",   code: "+44",  mask: "#### ### ####",     max: 10 },
+  { flag: "🇩🇪", name: "Alemanha",      code: "+49",  mask: "#### #######",      max: 11 },
+  { flag: "🇫🇷", name: "França",        code: "+33",  mask: "# ## ## ## ##",     max: 9  },
+  { flag: "🇪🇸", name: "Espanha",       code: "+34",  mask: "### ### ###",       max: 9  },
+  { flag: "🇮🇹", name: "Itália",        code: "+39",  mask: "### #### ###",      max: 10 },
+  { flag: "🇯🇵", name: "Japão",         code: "+81",  mask: "##-####-####",      max: 10 },
+  { flag: "🇨🇳", name: "China",         code: "+86",  mask: "### ####-####",     max: 11 },
+  { flag: "🇮🇳", name: "Índia",         code: "+91",  mask: "##### #####",       max: 10 },
+];
+
 export default function CobrancasPage() {
+  const supabase = createClient();
+
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [pageTab, setPageTab] = useState<PageTab>("cobrancas");
   const [chargeMode, setChargeMode] = useState<ChargeMode>("individual");
@@ -96,6 +123,51 @@ export default function CobrancasPage() {
   const [sendingMassa, setSendingMassa] = useState(false);
   const [sentMassa, setSentMassa]       = useState(false);
 
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState({ nome: "", telefone: "", valor: "", dia_cobranca: "5" });
+  const [country, setCountry] = useState(COUNTRIES[0]);
+  const [showCountries, setShowCountries] = useState(false);
+
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clienteId: number } | null>(null);
+
+  // Carrega clientes do banco
+  useEffect(() => {
+    async function load() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from("clientes")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (data) setClientes(data as Cliente[]);
+    }
+    load();
+  }, []);
+
+  function openCtxMenu(e: React.MouseEvent, id: number) {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY, clienteId: id });
+  }
+
+  async function addCliente() {
+    const v = parseFloat(form.valor.replace(",", "."));
+    if (!form.nome.trim() || isNaN(v)) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data, error } = await supabase.from("clientes").insert({
+      user_id: user.id,
+      nome: form.nome.trim(),
+      telefone: form.telefone.trim() ? `${country.code} ${form.telefone.trim()}` : "",
+      valor: v,
+      dia_cobranca: Math.min(28, Math.max(1, Number(form.dia_cobranca) || 1)),
+      status: "pendente",
+    }).select().single();
+    if (!error && data) setClientes((p) => [data as Cliente, ...p]);
+    setForm({ nome: "", telefone: "", valor: "", dia_cobranca: "5" });
+    setShowModal(false);
+  }
+
   const totals = {
     pendente: clientes.filter((c) => c.status === "pendente").reduce((a, c) => a + c.valor, 0),
     cobrado:  clientes.filter((c) => c.status === "cobrado").reduce((a, c) => a + c.valor, 0),
@@ -108,8 +180,9 @@ export default function CobrancasPage() {
 
   function getMensagem(c: Cliente) { return mensagens[c.id] ?? defaultMsg(c); }
 
-  function setStatus(id: number, status: Status, cobrado_em?: string) {
+  async function setStatus(id: number, status: Status, cobrado_em?: string) {
     setClientes((p) => p.map((c) => c.id === id ? { ...c, status, ...(cobrado_em ? { cobrado_em } : {}) } : c));
+    await supabase.from("clientes").update({ status, ...(cobrado_em ? { cobrado_em } : {}) }).eq("id", id);
   }
 
   async function cobrarUm(c: Cliente) {
@@ -129,7 +202,9 @@ export default function CobrancasPage() {
     await Promise.all(alvos.map((c) =>
       dispararWebhook({ nome: c.nome, telefone: c.telefone, valor: c.valor, dia_cobranca: c.dia_cobranca, mensagem: mensagemMassa || defaultMsg(c) })
     ));
+    const ids = [...selectedIds];
     setClientes((p) => p.map((c) => selectedIds.has(c.id) ? { ...c, status: "cobrado", cobrado_em: hoje } : c));
+    await supabase.from("clientes").update({ status: "cobrado", cobrado_em: hoje }).in("id", ids);
     setSendingMassa(false); setSentMassa(true); setSelectedIds(new Set());
     setTimeout(() => setSentMassa(false), 3000);
   }
@@ -163,23 +238,33 @@ export default function CobrancasPage() {
           </p>
         </div>
 
-        {/* Page tabs */}
-        <div
-          className="flex rounded-xl p-1 gap-1"
-          style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)" }}
-        >
-          {(["cobrancas", "pagamentos"] as PageTab[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setPageTab(tab)}
-              className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-all active:scale-[0.95] capitalize"
-              style={pageTab === tab
-                ? { background: "var(--color-brand)", color: "white" }
-                : { color: "var(--color-text-muted)" }}
-            >
-              {tab === "cobrancas" ? "Cobranças" : "Pagamentos"}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
+            style={{ background: "var(--color-brand)", color: "white" }}
+          >
+            <Plus size={15} /> Novo cliente
+          </button>
+
+          {/* Page tabs */}
+          <div
+            className="flex rounded-xl p-1 gap-1"
+            style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)" }}
+          >
+            {(["cobrancas", "pagamentos"] as PageTab[]).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setPageTab(tab)}
+                className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-all active:scale-[0.95] capitalize"
+                style={pageTab === tab
+                  ? { background: "var(--color-brand)", color: "white" }
+                  : { color: "var(--color-text-muted)" }}
+              >
+                {tab === "cobrancas" ? "Cobranças" : "Pagamentos"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -299,6 +384,7 @@ export default function CobrancasPage() {
                   <div key={c.id}>
                     <div
                       className="grid items-center px-5 py-3.5 text-sm transition-colors"
+                      onContextMenu={(e) => openCtxMenu(e, c.id)}
                       style={{
                         gridTemplateColumns: "1fr 140px 90px 120px 88px",
                         background: isOpen
@@ -549,6 +635,208 @@ export default function CobrancasPage() {
             <div className="flex items-center gap-4">
               <span>Cobrado: <strong style={{ color: STATUS_CFG.cobrado.color }}>{fmt(totals.cobrado)}</strong></span>
               <span>Pago: <strong style={{ color: STATUS_CFG.pago.color }}>{fmt(totals.pago)}</strong></span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Context menu de status ── */}
+      {ctxMenu && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setCtxMenu(null)}
+          onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
+        >
+          <div
+            className="absolute rounded-xl overflow-hidden py-1"
+            style={{
+              top: ctxMenu.y,
+              left: ctxMenu.x,
+              background: "var(--color-surface-2)",
+              border: "1px solid var(--color-border)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+              minWidth: "180px",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-muted)", borderBottom: "1px solid var(--color-border)" }}>
+              Alterar status
+            </p>
+            {(["pendente", "cobrado", "pago"] as Status[]).map((s) => {
+              const cfg = STATUS_CFG[s];
+              const Icon = cfg.icon;
+              const isCurrent = clientes.find((c) => c.id === ctxMenu.clienteId)?.status === s;
+              return (
+                <button
+                  key={s}
+                  onClick={() => { setStatus(ctxMenu.clienteId, s); setCtxMenu(null); }}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-all"
+                  style={{
+                    background: isCurrent ? "color-mix(in srgb, var(--color-brand) 10%, transparent)" : "transparent",
+                    color: isCurrent ? cfg.color : "var(--color-text)",
+                  }}
+                  onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = "var(--color-surface-3)"; }}
+                  onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = "transparent"; }}
+                >
+                  <Icon size={13} style={{ color: cfg.color }} />
+                  <span>{cfg.label}</span>
+                  {isCurrent && <span className="ml-auto text-xs opacity-60">atual</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal novo cliente ── */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl p-6 flex flex-col gap-4"
+            style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold" style={{ fontFamily: "var(--font-display)" }}>Novo cliente</h2>
+              <button onClick={() => setShowModal(false)} style={{ color: "var(--color-text-muted)" }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Nome */}
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text-muted)" }}>Nome</label>
+              <input
+                type="text"
+                placeholder="João Silva"
+                value={form.nome}
+                onChange={(e) => setForm((p) => ({ ...p, nome: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && addCliente()}
+                className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+              />
+            </div>
+
+            {/* Telefone com seletor de país */}
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text-muted)" }}>Telefone</label>
+              <div className="flex gap-2 relative">
+                {/* Botão país */}
+                <button
+                  type="button"
+                  onClick={() => setShowCountries((v) => !v)}
+                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium shrink-0 transition-all active:scale-[0.97]"
+                  style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                >
+                  <span>{country.flag}</span>
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>{country.code}</span>
+                  <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>▾</span>
+                </button>
+
+                {/* Dropdown países */}
+                {showCountries && (
+                  <div
+                    className="absolute top-full left-0 mt-1 z-10 rounded-xl overflow-hidden overflow-y-auto"
+                    style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", maxHeight: "220px", minWidth: "220px", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
+                  >
+                    {COUNTRIES.map((c) => (
+                      <button
+                        key={c.code + c.name}
+                        type="button"
+                        onClick={() => { setCountry(c); setShowCountries(false); setForm((p) => ({ ...p, telefone: "" })); }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left transition-all"
+                        style={{
+                          background: country.code === c.code ? "color-mix(in srgb, var(--color-brand) 12%, transparent)" : "transparent",
+                          color: "var(--color-text)",
+                        }}
+                        onMouseEnter={(e) => { if (country.code !== c.code) e.currentTarget.style.background = "var(--color-surface-3)"; }}
+                        onMouseLeave={(e) => { if (country.code !== c.code) e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span className="text-base">{c.flag}</span>
+                        <span className="flex-1 truncate">{c.name}</span>
+                        <span className="text-xs shrink-0" style={{ color: "var(--color-text-muted)" }}>{c.code}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Input número */}
+                <input
+                  type="tel"
+                  placeholder={country.mask.replace(/#/g, "0")}
+                  value={form.telefone}
+                  maxLength={country.max + 4}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, "").slice(0, country.max);
+                    setForm((p) => ({ ...p, telefone: digits }));
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && addCliente()}
+                  className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                  onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+                />
+              </div>
+              <p className="text-xs mt-1.5" style={{ color: "var(--color-text-muted)" }}>
+                {form.telefone.length}/{country.max} dígitos
+              </p>
+            </div>
+
+            {/* Valor */}
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text-muted)" }}>Valor (R$)</label>
+              <input
+                type="text"
+                placeholder="1500,00"
+                value={form.valor}
+                onChange={(e) => setForm((p) => ({ ...p, valor: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && addCliente()}
+                className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+              />
+            </div>
+
+            {/* Dia de cobrança */}
+            <div>
+              <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text-muted)" }}>Dia de cobrança</label>
+              <input
+                type="number"
+                placeholder="5"
+                min={1}
+                max={28}
+                value={form.dia_cobranca}
+                onChange={(e) => setForm((p) => ({ ...p, dia_cobranca: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && addCliente()}
+                className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+              />
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={addCliente}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
+                style={{ background: "var(--color-brand)", color: "white" }}
+              >
+                Adicionar
+              </button>
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
+                style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+              >
+                Cancelar
+              </button>
             </div>
           </div>
         </div>

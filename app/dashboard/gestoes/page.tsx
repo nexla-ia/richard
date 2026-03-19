@@ -2,9 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Upload, Search, X, Trash2, Plus, CalendarDays } from "lucide-react";
-type Gestao = { id: number; nome: string; valor: number; data: string; feito: string };
+import { createClient } from "@/lib/supabase/client";
 
-let nextId = 1;
+type Gestao = { id: number; nome: string; valor: number; data: string; feito: string };
 
 function formatCurrency(v: number) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -35,6 +35,8 @@ function groupByMonth(rows: Gestao[]) {
 type EditingCell = { id: number; field: keyof Gestao } | null;
 
 export default function GestoesPage() {
+  const supabase = createClient();
+
   const [rows, setRows] = useState<Gestao[]>([]);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<EditingCell>(null);
@@ -45,16 +47,39 @@ export default function GestoesPage() {
     b.localeCompare(a)
   );
 
-  const [activeMonth, setActiveMonth] = useState<string>(allMonths[0] ?? "");
+  const [activeMonth, setActiveMonth] = useState<string>("");
+
+  // Carrega gestões do banco
+  useEffect(() => {
+    async function load() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from("gestoes")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("data", { ascending: false });
+      if (data && data.length > 0) {
+        setRows(data as Gestao[]);
+        setActiveMonth(data[0].data.slice(0, 7));
+      }
+    }
+    load();
+  }, []);
+
+  // Atualiza activeMonth quando rows carregam pela primeira vez
+  useEffect(() => {
+    if (!activeMonth && allMonths.length > 0) {
+      setActiveMonth(allMonths[0]);
+    }
+  }, [allMonths]);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
-  // All rows grouped (for sidebar totals)
   const allGrouped = groupByMonth(rows);
 
-  // Filtered rows for the active month + search
   const filteredRows = rows.filter((r) => {
     const matchMonth = r.data.startsWith(activeMonth);
     const matchSearch =
@@ -69,8 +94,9 @@ export default function GestoesPage() {
     setEditValue(String(val));
   }
 
-  function commitEdit() {
+  async function commitEdit() {
     if (!editing) return;
+    let updatedRow: Gestao | null = null;
     setRows((prev) =>
       prev.map((row) => {
         if (row.id !== editing.id) return row;
@@ -81,22 +107,38 @@ export default function GestoesPage() {
         } else {
           (updated as Record<string, unknown>)[editing.field] = editValue;
         }
+        updatedRow = updated;
         return updated;
       })
     );
     setEditing(null);
+    if (updatedRow) {
+      const { nome, valor, data, feito } = updatedRow as Gestao;
+      await supabase.from("gestoes").update({ nome, valor, data, feito }).eq("id", editing.id);
+    }
   }
 
-  function addRow() {
+  async function addRow() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
     const today = new Date().toISOString().slice(0, 10);
-    const date = today.startsWith(activeMonth) ? today : `${activeMonth}-01`;
-    const newRow: Gestao = { id: nextId++, nome: "", valor: 0, data: date, feito: "" };
-    setRows((prev) => [...prev, newRow]);
-    setTimeout(() => setEditing({ id: newRow.id, field: "nome" }), 50);
+    const date = activeMonth ? (today.startsWith(activeMonth) ? today : `${activeMonth}-01`) : today;
+    const { data, error } = await supabase
+      .from("gestoes")
+      .insert({ user_id: user.id, nome: "", valor: 0, data: date, feito: "" })
+      .select()
+      .single();
+    if (!error && data) {
+      const newRow = data as Gestao;
+      setRows((prev) => [...prev, newRow]);
+      if (!activeMonth) setActiveMonth(newRow.data.slice(0, 7));
+      setTimeout(() => setEditing({ id: newRow.id, field: "nome" }), 50);
+    }
   }
 
-  function deleteRow(id: number) {
+  async function deleteRow(id: number) {
     setRows((prev) => prev.filter((r) => r.id !== id));
+    await supabase.from("gestoes").delete().eq("id", id);
   }
 
   function Cell({
@@ -204,6 +246,11 @@ export default function GestoesPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto py-2">
+            {allMonths.length === 0 && (
+              <p className="text-xs px-4 py-3" style={{ color: "var(--color-text-muted)" }}>
+                Nenhum registro ainda
+              </p>
+            )}
             {allMonths.map((ym) => {
               const monthRows = allGrouped.get(ym) ?? [];
               const total = monthRows.reduce((acc, r) => acc + r.valor, 0);
@@ -217,17 +264,9 @@ export default function GestoesPage() {
                   key={ym}
                   onClick={() => setActiveMonth(ym)}
                   className="w-full text-left px-4 py-3 flex flex-col gap-0.5 transition-all active:scale-[0.97] relative"
-                  style={
-                    isActive
-                      ? { background: "color-mix(in srgb, var(--color-brand) 12%, transparent)" }
-                      : {}
-                  }
-                  onMouseEnter={(e) => {
-                    if (!isActive) e.currentTarget.style.background = "var(--color-surface-3)";
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isActive) e.currentTarget.style.background = "";
-                  }}
+                  style={isActive ? { background: "color-mix(in srgb, var(--color-brand) 12%, transparent)" } : {}}
+                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--color-surface-3)"; }}
+                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = ""; }}
                 >
                   {isActive && (
                     <span
@@ -235,19 +274,13 @@ export default function GestoesPage() {
                       style={{ background: "var(--color-brand)" }}
                     />
                   )}
-                  <span
-                    className="text-sm font-semibold"
-                    style={{ color: isActive ? "var(--color-brand)" : "var(--color-text)" }}
-                  >
+                  <span className="text-sm font-semibold" style={{ color: isActive ? "var(--color-brand)" : "var(--color-text)" }}>
                     {labelCap}
                   </span>
                   <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                     {y} · {monthRows.length} reg.
                   </span>
-                  <span
-                    className="text-xs font-semibold mt-0.5"
-                    style={{ color: isActive ? "var(--color-brand)" : "var(--color-text-muted)" }}
-                  >
+                  <span className="text-xs font-semibold mt-0.5" style={{ color: isActive ? "var(--color-brand)" : "var(--color-text-muted)" }}>
                     {formatCurrency(total)}
                   </span>
                 </button>
@@ -258,7 +291,6 @@ export default function GestoesPage() {
 
         {/* Main content */}
         <div className="flex-1 flex flex-col min-w-0 gap-4">
-          {/* Search + month heading */}
           <div className="flex items-center gap-3">
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--color-text-muted)" }} />
@@ -268,32 +300,19 @@ export default function GestoesPage() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full pl-9 pr-9 py-2.5 rounded-xl text-sm outline-none"
-                style={{
-                  background: "var(--color-surface-2)",
-                  border: "1px solid var(--color-border)",
-                  color: "var(--color-text)",
-                }}
+                style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
                 onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
                 onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
               />
               {search && (
-                <button
-                  onClick={() => setSearch("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2"
-                  style={{ color: "var(--color-text-muted)" }}
-                >
+                <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--color-text-muted)" }}>
                   <X size={13} />
                 </button>
               )}
             </div>
-
             <div
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm shrink-0"
-              style={{
-                background: "var(--color-surface-2)",
-                border: "1px solid var(--color-border)",
-                color: "var(--color-text-muted)",
-              }}
+              style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
             >
               Total:
               <span className="font-semibold" style={{ color: "var(--color-brand)" }}>
@@ -302,37 +321,19 @@ export default function GestoesPage() {
             </div>
           </div>
 
-          {/* Table */}
-          <div
-            className="flex-1 rounded-2xl overflow-hidden flex flex-col"
-            style={{ border: "1px solid var(--color-border)" }}
-          >
-            {/* Month heading inside table */}
-            <div
-              className="flex items-center justify-between px-5 py-3 border-b"
-              style={{ background: "var(--color-surface-3)", borderColor: "var(--color-border)" }}
-            >
-              <span
-                className="text-sm font-bold capitalize"
-                style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
-              >
-                {getMonthLabel(activeMonth)}
+          <div className="flex-1 rounded-2xl overflow-hidden flex flex-col" style={{ border: "1px solid var(--color-border)" }}>
+            <div className="flex items-center justify-between px-5 py-3 border-b" style={{ background: "var(--color-surface-3)", borderColor: "var(--color-border)" }}>
+              <span className="text-sm font-bold capitalize" style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}>
+                {activeMonth ? getMonthLabel(activeMonth) : "Nenhum mês selecionado"}
               </span>
               <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                 {filteredRows.length} registro{filteredRows.length !== 1 ? "s" : ""}
               </span>
             </div>
 
-            {/* Column headers */}
             <div
               className="grid text-xs font-semibold uppercase tracking-wider px-2 py-2.5"
-              style={{
-                gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px",
-                minWidth: "580px",
-                background: "var(--color-surface-2)",
-                color: "var(--color-text-muted)",
-                borderBottom: "1px solid var(--color-border)",
-              }}
+              style={{ gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px", minWidth: "580px", background: "var(--color-surface-2)", color: "var(--color-text-muted)", borderBottom: "1px solid var(--color-border)" }}
             >
               <span className="px-4">Nome</span>
               <span className="px-4">Valor</span>
@@ -341,7 +342,6 @@ export default function GestoesPage() {
               <span />
             </div>
 
-            {/* Rows */}
             <div className="flex-1 overflow-y-auto" style={{ background: "var(--color-surface-2)" }}>
               {filteredRows.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 gap-2">
@@ -356,12 +356,7 @@ export default function GestoesPage() {
                   <div
                     key={row.id}
                     className="grid items-center px-2 group"
-                    style={{
-                      gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px",
-                      minWidth: "580px",
-                      background: index % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)",
-                      borderBottom: "1px solid var(--color-border)",
-                    }}
+                    style={{ gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px", minWidth: "580px", background: index % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)", borderBottom: "1px solid var(--color-border)" }}
                   >
                     <Cell row={row} field="nome" display={row.nome} />
                     <Cell row={row} field="valor" display={formatCurrency(row.valor)} inputType="number" highlight />
@@ -379,23 +374,12 @@ export default function GestoesPage() {
               )}
             </div>
 
-            {/* Add row */}
             <button
               onClick={addRow}
               className="flex items-center gap-2 px-6 py-3 text-sm transition-all active:scale-[0.99] w-full"
-              style={{
-                background: "var(--color-surface-2)",
-                color: "var(--color-text-muted)",
-                borderTop: "1px dashed var(--color-border)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = "var(--color-brand)";
-                e.currentTarget.style.background = "var(--color-surface-3)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = "var(--color-text-muted)";
-                e.currentTarget.style.background = "var(--color-surface-2)";
-              }}
+              style={{ background: "var(--color-surface-2)", color: "var(--color-text-muted)", borderTop: "1px dashed var(--color-border)" }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-brand)"; e.currentTarget.style.background = "var(--color-surface-3)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.background = "var(--color-surface-2)"; }}
             >
               <Plus size={14} />
               Adicionar registro
