@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Send, Users, CheckCircle, Clock, MessageSquare,
   Loader2, DollarSign, AlertCircle, ChevronDown, ChevronUp,
-  Plus, X,
+  Plus, X, Trash2, Upload, FileSpreadsheet, CheckCheck,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -109,6 +109,7 @@ export default function CobrancasPage() {
   const supabase = createClient();
 
   const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [loading, setLoading] = useState(true);
   const [pageTab, setPageTab] = useState<PageTab>("cobrancas");
   const [chargeMode, setChargeMode] = useState<ChargeMode>("individual");
   const [filterStatus, setFilterStatus] = useState<Status | "todos">("todos");
@@ -130,19 +131,33 @@ export default function CobrancasPage() {
 
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clienteId: number } | null>(null);
 
+  const [showImport, setShowImport] = useState(false);
+  const [importRows, setImportRows] = useState<{ nome: string; telefone: string; valor: string; dia_cobranca: string }[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importDone, setImportDone] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
   // Carrega clientes do banco
   useEffect(() => {
+    let uid: string | null = null;
     async function load() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      uid = session.user.id;
       const { data } = await supabase
         .from("clientes")
         .select("*")
-        .eq("user_id", user.id)
+        .eq("user_id", uid)
         .order("created_at", { ascending: false });
       if (data) setClientes(data as Cliente[]);
+      setLoading(false);
     }
     load();
+    const channel = supabase
+      .channel("clientes-rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => { load(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   function openCtxMenu(e: React.MouseEvent, id: number) {
@@ -185,6 +200,11 @@ export default function CobrancasPage() {
     await supabase.from("clientes").update({ status, ...(cobrado_em ? { cobrado_em } : {}) }).eq("id", id);
   }
 
+  async function deleteCliente(id: number) {
+    setClientes((p) => p.filter((c) => c.id !== id));
+    await supabase.from("clientes").delete().eq("id", id);
+  }
+
   async function cobrarUm(c: Cliente) {
     setSendingId(c.id); setErrorId(null);
     const hoje = new Date().toLocaleDateString("pt-BR");
@@ -218,6 +238,47 @@ export default function CobrancasPage() {
     setStatus(c.id, c.status === "cobrado" ? "pago" : "cobrado");
   }
 
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const lines = text.split(/\r?\n/).filter((l) => l.trim());
+      // skip header row if first cell looks like a label
+      const start = isNaN(parseFloat(lines[0]?.split(/[,;]/)[2]?.replace(",", "."))) ? 1 : 0;
+      const rows = lines.slice(start).map((line) => {
+        const cols = line.split(/[,;]/).map((c) => c.trim().replace(/^"|"$/g, ""));
+        return { nome: cols[0] ?? "", telefone: cols[1] ?? "", valor: cols[2] ?? "", dia_cobranca: cols[3] ?? "5" };
+      }).filter((r) => r.nome);
+      setImportRows(rows);
+      setImportDone(false);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  async function handleImportSubmit() {
+    if (!importRows.length) return;
+    setImportLoading(true);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setImportLoading(false); return; }
+    const uid = session.user.id;
+    const toInsert = importRows.map((r) => ({
+      user_id: uid,
+      nome: r.nome,
+      telefone: r.telefone,
+      valor: parseFloat(r.valor.replace(",", ".")) || 0,
+      dia_cobranca: Math.min(28, Math.max(1, parseInt(r.dia_cobranca) || 5)),
+      status: "pendente" as Status,
+    }));
+    const { data } = await supabase.from("clientes").insert(toInsert).select();
+    if (data) setClientes((p) => [...(data as Cliente[]), ...p]);
+    setImportLoading(false);
+    setImportDone(true);
+    setTimeout(() => { setShowImport(false); setImportRows([]); setImportDone(false); }, 1500);
+  }
+
   /* ── shared table head style ── */
   const thStyle: React.CSSProperties = {
     background: "var(--color-surface-3)",
@@ -239,6 +300,15 @@ export default function CobrancasPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => { setShowImport(true); setImportRows([]); setImportDone(false); }}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
+            style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--color-brand)"; e.currentTarget.style.borderColor = "rgba(99,102,241,0.4)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border)"; }}
+          >
+            <FileSpreadsheet size={15} /> Importar planilha
+          </button>
           <button
             onClick={() => setShowModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
@@ -361,7 +431,7 @@ export default function CobrancasPage() {
             <div className="rounded-2xl overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
               <div
                 className="grid text-xs font-semibold uppercase tracking-wider px-5 py-3"
-                style={{ ...thStyle, gridTemplateColumns: "1fr 140px 90px 120px 88px" }}
+                style={{ ...thStyle, gridTemplateColumns: "1fr 140px 90px 120px 120px" }}
               >
                 <span>Cliente</span>
                 <span>Valor</span>
@@ -386,7 +456,7 @@ export default function CobrancasPage() {
                       className="grid items-center px-5 py-3.5 text-sm transition-colors"
                       onContextMenu={(e) => openCtxMenu(e, c.id)}
                       style={{
-                        gridTemplateColumns: "1fr 140px 90px 120px 88px",
+                        gridTemplateColumns: "1fr 140px 90px 120px 120px",
                         background: isOpen
                           ? "color-mix(in srgb, var(--color-brand) 5%, var(--color-surface-2))"
                           : "var(--color-surface-2)",
@@ -412,16 +482,28 @@ export default function CobrancasPage() {
 
                       <StatusBadge status={c.status} />
 
-                      <button
-                        onClick={() => { setOpenId(isOpen ? null : c.id); setErrorId(null); }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-[0.95] ml-auto"
-                        style={isOpen
-                          ? { background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }
-                          : { background: "var(--color-brand)", color: "white" }}
-                      >
-                        <Send size={11} />
-                        {isOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                      </button>
+                      <div className="flex items-center gap-1.5 ml-auto">
+                        <button
+                          onClick={() => { setOpenId(isOpen ? null : c.id); setErrorId(null); }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-[0.95]"
+                          style={isOpen
+                            ? { background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border)" }
+                            : { background: "var(--color-brand)", color: "white" }}
+                        >
+                          <Send size={11} />
+                          {isOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                        </button>
+                        <button
+                          onClick={() => deleteCliente(c.id)}
+                          title="Deletar cliente"
+                          className="p-1.5 rounded-lg transition-all active:scale-[0.95]"
+                          style={{ color: "var(--color-text-muted)", border: "1px solid var(--color-border)", background: "var(--color-surface-3)" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.borderColor = "rgba(248,113,113,0.4)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--color-text-muted)"; e.currentTarget.style.borderColor = "var(--color-border)"; }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
 
                     {isOpen && (
@@ -542,10 +624,27 @@ export default function CobrancasPage() {
                 >
                   <span /><span>Cliente</span><span>Valor</span><span>Vencimento</span><span>Status</span>
                 </div>
-                {clientes.map((c) => (
+                {loading
+                  ? Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className="grid items-center px-5 py-3.5"
+                      style={{ gridTemplateColumns: "32px 1fr 140px 90px 120px", background: "var(--color-surface-2)", borderBottom: "1px solid var(--color-border)" }}>
+                      <span className="skeleton w-4 h-4 rounded" />
+                      <div className="flex items-center gap-3">
+                        <span className="skeleton w-8 h-8 rounded-full shrink-0" />
+                        <div className="flex flex-col gap-1.5">
+                          <span className="skeleton h-3.5" style={{ width: `${80 + (i * 27) % 60}px` }} />
+                          <span className="skeleton h-2.5 w-24" />
+                        </div>
+                      </div>
+                      <span className="skeleton h-3.5 w-16" />
+                      <span className="skeleton h-3.5 w-10" />
+                      <span className="skeleton h-6 w-20 rounded-full" />
+                    </div>
+                  ))
+                  : clientes.map((c, i) => (
                   <div
                     key={c.id}
-                    className="grid items-center px-5 py-3.5 text-sm cursor-pointer transition-colors"
+                    className="grid items-center px-5 py-3.5 text-sm cursor-pointer transition-colors animate-fade-in"
                     style={{
                       gridTemplateColumns: "32px 1fr 140px 90px 120px",
                       background: selectedIds.has(c.id)
@@ -553,6 +652,7 @@ export default function CobrancasPage() {
                         : "var(--color-surface-2)",
                       borderBottom: "1px solid var(--color-border)",
                       borderLeft: `2px solid ${selectedIds.has(c.id) ? "var(--color-brand)" : "transparent"}`,
+                      animationDelay: `${i * 35}ms`,
                     }}
                     onClick={() => toggleSelect(c.id)}
                   >
@@ -684,6 +784,84 @@ export default function CobrancasPage() {
                 </button>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal importar planilha ── */}
+      {showImport && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setShowImport(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl flex flex-col gap-5 p-6 animate-fade-in"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet size={18} style={{ color: "var(--color-brand)" }} />
+                <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-display)" }}>Importar planilha</h2>
+              </div>
+              <button onClick={() => setShowImport(false)} className="p-1.5 rounded-lg" style={{ color: "var(--color-text-muted)" }}><X size={16} /></button>
+            </div>
+
+            {/* Formato esperado */}
+            <div className="p-3 rounded-xl text-xs" style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+              <p className="font-semibold mb-1" style={{ color: "var(--color-text)" }}>Formato esperado (CSV):</p>
+              <p>Colunas em ordem: <strong>Nome, Telefone, Valor, Dia de cobrança</strong></p>
+              <p className="mt-1 font-mono" style={{ color: "var(--color-brand)" }}>João Silva, 11999990000, 150.00, 10</p>
+              <p className="mt-1">Separador: vírgula ou ponto-e-vírgula. A 1ª linha pode ser cabeçalho.</p>
+            </div>
+
+            {/* Área de upload */}
+            <input ref={importInputRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleImportFile} />
+            {importRows.length === 0 ? (
+              <button
+                onClick={() => importInputRef.current?.click()}
+                className="flex flex-col items-center justify-center gap-3 py-10 rounded-2xl border-2 border-dashed transition-all"
+                style={{ borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-brand)"; e.currentTarget.style.color = "var(--color-brand)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-border)"; e.currentTarget.style.color = "var(--color-text-muted)"; }}
+              >
+                <Upload size={28} />
+                <span className="text-sm font-medium">Clique para selecionar arquivo .csv</span>
+              </button>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">{importRows.length} cliente{importRows.length !== 1 ? "s" : ""} encontrado{importRows.length !== 1 ? "s" : ""}</span>
+                  <button onClick={() => importInputRef.current?.click()} className="text-xs px-2 py-1 rounded-lg" style={{ color: "var(--color-brand)", border: "1px solid rgba(99,102,241,0.3)" }}>Trocar arquivo</button>
+                </div>
+                {/* Preview */}
+                <div className="rounded-xl overflow-hidden max-h-48 overflow-y-auto" style={{ border: "1px solid var(--color-border)" }}>
+                  <div className="grid text-xs font-semibold uppercase px-3 py-2" style={{ gridTemplateColumns: "1fr 120px 80px 60px", background: "var(--color-surface-3)", color: "var(--color-text-muted)", borderBottom: "1px solid var(--color-border)" }}>
+                    <span>Nome</span><span>Telefone</span><span>Valor</span><span>Dia</span>
+                  </div>
+                  {importRows.map((r, i) => (
+                    <div key={i} className="grid items-center px-3 py-2 text-xs" style={{ gridTemplateColumns: "1fr 120px 80px 60px", background: i % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)", borderBottom: "1px solid var(--color-border)" }}>
+                      <span className="truncate font-medium">{r.nome}</span>
+                      <span className="truncate" style={{ color: "var(--color-text-muted)" }}>{r.telefone || "—"}</span>
+                      <span style={{ color: "var(--color-brand)" }}>{r.valor}</span>
+                      <span style={{ color: "var(--color-text-muted)" }}>{r.dia_cobranca}</span>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={handleImportSubmit}
+                  disabled={importLoading || importDone}
+                  className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
+                  style={{ background: importDone ? "rgba(52,211,153,0.15)" : "var(--color-brand)", color: importDone ? "#34d399" : "white", border: importDone ? "1px solid rgba(52,211,153,0.3)" : "none" }}
+                >
+                  {importLoading ? <><Loader2 size={14} className="animate-spin" /> Importando...</>
+                   : importDone ? <><CheckCheck size={14} /> Importado com sucesso!</>
+                   : <><Upload size={14} /> Importar {importRows.length} cliente{importRows.length !== 1 ? "s" : ""}</>}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

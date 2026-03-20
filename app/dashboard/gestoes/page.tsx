@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Upload, Search, X, Trash2, Plus, CalendarDays } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -34,17 +34,89 @@ function groupByMonth(rows: Gestao[]) {
 
 type EditingCell = { id: number; field: keyof Gestao } | null;
 
+function Cell({
+  row,
+  field,
+  display,
+  inputType = "text",
+  highlight = false,
+  editing,
+  editValue,
+  inputRef,
+  onStartEdit,
+  onChangeValue,
+  onCommit,
+  onCancelEdit,
+}: {
+  row: Gestao;
+  field: keyof Gestao;
+  display: string;
+  inputType?: string;
+  highlight?: boolean;
+  editing: EditingCell;
+  editValue: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  onStartEdit: (id: number, field: keyof Gestao, val: string | number) => void;
+  onChangeValue: (v: string) => void;
+  onCommit: () => void;
+  onCancelEdit: () => void;
+}) {
+  const isEditing = editing?.id === row.id && editing?.field === field;
+  return (
+    <div
+      className="px-4 py-3 cursor-pointer"
+      onClick={() => !isEditing && onStartEdit(row.id, field, row[field])}
+      title="Clique para editar"
+    >
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          type={inputType}
+          value={editValue}
+          onChange={(e) => onChangeValue(e.target.value)}
+          onBlur={onCommit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onCommit();
+            if (e.key === "Escape") onCancelEdit();
+          }}
+          className="w-full px-2 py-1 rounded-lg text-sm outline-none"
+          style={{
+            background: "var(--color-surface-3)",
+            border: "1px solid var(--color-brand)",
+            color: "var(--color-text)",
+          }}
+        />
+      ) : (
+        <span
+          className="text-sm block truncate"
+          style={
+            highlight
+              ? { color: "var(--color-brand)", fontWeight: 600 }
+              : display
+              ? { color: "var(--color-text)" }
+              : { color: "var(--color-border)" }
+          }
+        >
+          {display || "—"}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function GestoesPage() {
   const supabase = createClient();
 
   const [rows, setRows] = useState<Gestao[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<EditingCell>(null);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const allMonths = Array.from(new Set(rows.map((r) => r.data.slice(0, 7)))).sort((a, b) =>
-    b.localeCompare(a)
+  const allMonths = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.data.slice(0, 7)))).sort((a, b) => b.localeCompare(a)),
+    [rows]
   );
 
   const [activeMonth, setActiveMonth] = useState<string>("");
@@ -52,19 +124,25 @@ export default function GestoesPage() {
   // Carrega gestões do banco
   useEffect(() => {
     async function load() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
       const { data } = await supabase
         .from("gestoes")
         .select("*")
-        .eq("user_id", user.id)
+        .eq("user_id", session.user.id)
         .order("data", { ascending: false });
       if (data && data.length > 0) {
         setRows(data as Gestao[]);
         setActiveMonth(data[0].data.slice(0, 7));
       }
+      setLoading(false);
     }
     load();
+    const channel = supabase
+      .channel("gestoes-rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "gestoes" }, () => { load(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   // Atualiza activeMonth quando rows carregam pela primeira vez
@@ -78,16 +156,16 @@ export default function GestoesPage() {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
-  const allGrouped = groupByMonth(rows);
+  const allGrouped = useMemo(() => groupByMonth(rows), [rows]);
 
-  const filteredRows = rows.filter((r) => {
+  const filteredRows = useMemo(() => rows.filter((r) => {
     const matchMonth = r.data.startsWith(activeMonth);
     const matchSearch =
       search === "" ||
       r.nome.toLowerCase().includes(search.toLowerCase()) ||
       r.feito.toLowerCase().includes(search.toLowerCase());
     return matchMonth && matchSearch;
-  });
+  }), [rows, activeMonth, search]);
 
   function startEdit(id: number, field: keyof Gestao, val: string | number) {
     setEditing({ id, field });
@@ -141,63 +219,7 @@ export default function GestoesPage() {
     await supabase.from("gestoes").delete().eq("id", id);
   }
 
-  function Cell({
-    row,
-    field,
-    display,
-    inputType = "text",
-    highlight = false,
-  }: {
-    row: Gestao;
-    field: keyof Gestao;
-    display: string;
-    inputType?: string;
-    highlight?: boolean;
-  }) {
-    const isEditing = editing?.id === row.id && editing?.field === field;
-    return (
-      <div
-        className="px-4 py-3 cursor-pointer"
-        onClick={() => !isEditing && startEdit(row.id, field, row[field])}
-        title="Clique para editar"
-      >
-        {isEditing ? (
-          <input
-            ref={inputRef}
-            type={inputType}
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit();
-              if (e.key === "Escape") setEditing(null);
-            }}
-            className="w-full px-2 py-1 rounded-lg text-sm outline-none"
-            style={{
-              background: "var(--color-surface-3)",
-              border: "1px solid var(--color-brand)",
-              color: "var(--color-text)",
-            }}
-          />
-        ) : (
-          <span
-            className="text-sm block truncate"
-            style={
-              highlight
-                ? { color: "var(--color-brand)", fontWeight: 600 }
-                : display
-                ? { color: "var(--color-text)" }
-                : { color: "var(--color-border)" }
-            }
-          >
-            {display || "—"}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  const monthTotal = filteredRows.reduce((acc, r) => acc + r.valor, 0);
+  const monthTotal = useMemo(() => filteredRows.reduce((acc, r) => acc + r.valor, 0), [filteredRows]);
 
   return (
     <div className="flex flex-col h-full gap-6">
@@ -343,8 +365,19 @@ export default function GestoesPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto" style={{ background: "var(--color-surface-2)" }}>
-              {filteredRows.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 gap-2">
+              {loading ? (
+                Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="grid items-center px-2"
+                    style={{ gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px", minWidth: "580px", background: i % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)", borderBottom: "1px solid var(--color-border)", padding: "12px 8px" }}>
+                    <div className="px-4"><span className="skeleton h-3.5" style={{ width: `${90 + (i * 31) % 60}px` }} /></div>
+                    <div className="px-4"><span className="skeleton h-3.5 w-16" /></div>
+                    <div className="px-4"><span className="skeleton h-3.5 w-20" /></div>
+                    <div className="px-4"><span className="skeleton h-3.5" style={{ width: `${70 + (i * 19) % 80}px` }} /></div>
+                    <div />
+                  </div>
+                ))
+              ) : filteredRows.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-2 animate-fade-in">
                   <p className="text-2xl">🔍</p>
                   <p className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>Nenhum registro encontrado</p>
                   <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
@@ -355,13 +388,13 @@ export default function GestoesPage() {
                 filteredRows.map((row, index) => (
                   <div
                     key={row.id}
-                    className="grid items-center px-2 group"
-                    style={{ gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px", minWidth: "580px", background: index % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)", borderBottom: "1px solid var(--color-border)" }}
+                    className="grid items-center px-2 group animate-fade-in"
+                    style={{ gridTemplateColumns: "2fr 1.2fr 1fr 3fr 36px", minWidth: "580px", background: index % 2 === 0 ? "var(--color-surface-2)" : "var(--color-surface)", borderBottom: "1px solid var(--color-border)", animationDelay: `${index * 30}ms` }}
                   >
-                    <Cell row={row} field="nome" display={row.nome} />
-                    <Cell row={row} field="valor" display={formatCurrency(row.valor)} inputType="number" highlight />
-                    <Cell row={row} field="data" display={formatDate(row.data)} inputType="date" />
-                    <Cell row={row} field="feito" display={row.feito} />
+                    <Cell row={row} field="nome" display={row.nome} editing={editing} editValue={editValue} inputRef={inputRef} onStartEdit={startEdit} onChangeValue={setEditValue} onCommit={commitEdit} onCancelEdit={() => setEditing(null)} />
+                    <Cell row={row} field="valor" display={formatCurrency(row.valor)} inputType="number" highlight editing={editing} editValue={editValue} inputRef={inputRef} onStartEdit={startEdit} onChangeValue={setEditValue} onCommit={commitEdit} onCancelEdit={() => setEditing(null)} />
+                    <Cell row={row} field="data" display={formatDate(row.data)} inputType="date" editing={editing} editValue={editValue} inputRef={inputRef} onStartEdit={startEdit} onChangeValue={setEditValue} onCommit={commitEdit} onCancelEdit={() => setEditing(null)} />
+                    <Cell row={row} field="feito" display={row.feito} editing={editing} editValue={editValue} inputRef={inputRef} onStartEdit={startEdit} onChangeValue={setEditValue} onCommit={commitEdit} onCancelEdit={() => setEditing(null)} />
                     <button
                       onClick={() => deleteRow(row.id)}
                       className="flex items-center justify-center w-7 h-7 rounded-lg transition-all opacity-0 group-hover:opacity-60 hover:opacity-100! active:scale-90"

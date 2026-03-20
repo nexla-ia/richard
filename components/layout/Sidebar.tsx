@@ -13,6 +13,7 @@ import {
   Zap,
   Menu,
   X,
+  FolderOpen,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -27,6 +28,7 @@ const navItems: NavItem[] = [
   { href: "/dashboard",                  label: "Dashboard",     icon: <LayoutDashboard size={18} /> },
   { href: "/dashboard/gestoes",          label: "Gestões",       icon: <ClipboardList size={18} /> },
   { href: "/dashboard/cobrancas",        label: "Cobranças",     icon: <CreditCard size={18} /> },
+  { href: "/dashboard/arquivos",         label: "Arquivos",      icon: <FolderOpen size={18} /> },
   { href: "/dashboard/configuracoes",    label: "Configurações", icon: <Settings size={18} /> },
   { href: "/admin", label: "Admin", icon: <Shield size={18} />, adminOnly: true },
 ];

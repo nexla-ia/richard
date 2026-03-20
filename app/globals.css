@@ -14,6 +14,43 @@
   --font-display: "Syne", sans-serif;
 }
 
+/* ── Animações ── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+@keyframes fade-in-fast {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -700px 0; }
+  100% { background-position: 700px 0;  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.28s ease-out both;
+}
+
+.animate-fade-in-fast {
+  animation: fade-in-fast 0.18s ease-out both;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-3) 25%,
+    color-mix(in srgb, var(--color-border) 60%, var(--color-surface-3)) 50%,
+    var(--color-surface-3) 75%
+  );
+  background-size: 700px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 5px;
+  display: block;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
