@@ -25,6 +25,7 @@ import {
   LayoutGrid,
   Calendar,
   Clock,
+  Download,
 } from "lucide-react";
 
 type ViewSize = "small" | "medium" | "large";
@@ -56,6 +57,7 @@ type ShareData = {
   id: string;
   senha: string | null;
   expires_at: string | null;
+  max_fotos_download: number | null;
 };
 
 function formatDate(iso?: string) {
@@ -100,6 +102,7 @@ export default function ArquivosPage() {
   const [sharingLoading, setSharingLoading] = useState(false);
   const [copied, setCopied]                 = useState(false);
   const [shareExpiry, setShareExpiry]       = useState("");       // "YYYY-MM-DD"
+  const [shareMaxFotos, setShareMaxFotos]   = useState<number | "">(""); // limite de fotos por sessão
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareEditing, setShareEditing] = useState(false);
   const [sharedPastaIds, setSharedPastaIds] = useState<Set<number>>(new Set());
@@ -158,12 +161,12 @@ export default function ArquivosPage() {
     if (pastasList.length > 0) {
       const { data: shares } = await supabase
         .from("compartilhamentos")
-        .select("id, pasta_id, senha, expires_at")
+        .select("id, pasta_id, senha, expires_at, max_fotos_download")
         .in("pasta_id", pastasList.map((p) => p.id))
         .eq("ativo", true);
       const newMap = new Map<number, ShareData>();
       (shares ?? []).forEach((s: ShareData & { pasta_id: number }) => {
-        newMap.set(s.pasta_id, { id: s.id, senha: s.senha, expires_at: s.expires_at });
+        newMap.set(s.pasta_id, { id: s.id, senha: s.senha, expires_at: s.expires_at, max_fotos_download: s.max_fotos_download });
       });
       setSharedPastaData(newMap);
       setSharedPastaIds(new Set(newMap.keys()));
@@ -248,6 +251,7 @@ export default function ArquivosPage() {
     setSharePasta(pasta);
     setShareSenha("");
     setShareExpiry("");
+    setShareMaxFotos("");
     setShareLink(null);
     setShareId(null);
     setShareError(null);
@@ -257,7 +261,7 @@ export default function ArquivosPage() {
     // verifica se já existe share ativo para esta pasta
     const { data } = await supabase
       .from("compartilhamentos")
-      .select("id, senha, expires_at")
+      .select("id, senha, expires_at, max_fotos_download")
       .eq("pasta_id", pasta.id)
       .eq("ativo", true)
       .maybeSingle();
@@ -266,6 +270,7 @@ export default function ArquivosPage() {
       setShareLink(`${window.location.origin}/s/${data.id}`);
       setShareSenha(data.senha ?? "");
       setShareExpiry(data.expires_at ? data.expires_at.split("T")[0] : "");
+      setShareMaxFotos(data.max_fotos_download ?? "");
     }
     setSharingLoading(false);
   }
@@ -285,6 +290,7 @@ export default function ArquivosPage() {
         nome: sharePasta.nome,
         senha: shareSenha.trim() || null,
         expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null,
+        max_fotos_download: shareMaxFotos !== "" ? Number(shareMaxFotos) : null,
         ativo: true,
       })
       .select("id")
@@ -295,7 +301,7 @@ export default function ArquivosPage() {
       setShareId(data.id);
       setShareLink(`${window.location.origin}/s/${data.id}`);
       if (sharePasta) {
-        const info: ShareData = { id: data.id, senha: shareSenha.trim() || null, expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null };
+        const info: ShareData = { id: data.id, senha: shareSenha.trim() || null, expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null, max_fotos_download: shareMaxFotos !== "" ? Number(shareMaxFotos) : null };
         setSharedPastaData((prev) => new Map(prev).set(sharePasta.id, info));
         setSharedPastaIds((prev) => new Set([...prev, sharePasta.id]));
       }
@@ -312,6 +318,7 @@ export default function ArquivosPage() {
       .update({
         senha: shareSenha.trim() || null,
         expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null,
+        max_fotos_download: shareMaxFotos !== "" ? Number(shareMaxFotos) : null,
       })
       .eq("id", shareId);
     if (error) {
@@ -322,7 +329,7 @@ export default function ArquivosPage() {
         setSharedPastaData((prev) => {
           const n = new Map(prev);
           const existing = n.get(sharePasta.id);
-          if (existing) n.set(sharePasta.id, { ...existing, senha: shareSenha.trim() || null, expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null });
+          if (existing) n.set(sharePasta.id, { ...existing, senha: shareSenha.trim() || null, expires_at: shareExpiry ? new Date(shareExpiry + "T23:59:59").toISOString() : null, max_fotos_download: shareMaxFotos !== "" ? Number(shareMaxFotos) : null });
           return n;
         });
       }
@@ -966,6 +973,12 @@ export default function ArquivosPage() {
                             <div className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium shrink-0" style={{ background: shareData.expires_at ? "rgba(251,146,60,0.08)" : "var(--color-surface-3)", color: shareData.expires_at ? "#fb923c" : "var(--color-text-muted)", border: `1px solid ${shareData.expires_at ? "rgba(251,146,60,0.3)" : "var(--color-border)"}` }} title={shareData.expires_at ? `Expira em ${new Date(shareData.expires_at).toLocaleDateString("pt-BR")}` : "Sem prazo de validade"}>
                               <Calendar size={10} />{shareData.expires_at ? new Date(shareData.expires_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "Sem prazo"}
                             </div>
+                            {/* Limite de fotos */}
+                            {shareData.max_fotos_download !== null && (
+                              <div className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium shrink-0" style={{ background: "rgba(167,139,250,0.08)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" }} title={`Limite: ${shareData.max_fotos_download} fotos por acesso`}>
+                                <Download size={10} />{shareData.max_fotos_download} fotos
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium w-fit" style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
@@ -1217,6 +1230,17 @@ export default function ArquivosPage() {
                         <Calendar size={11} /> Sem validade
                       </div>
                     )}
+                    {shareMaxFotos !== "" ? (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+                        style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.25)", color: "#a78bfa" }}>
+                        <Download size={11} /> {shareMaxFotos} fotos por acesso
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+                        style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}>
+                        <Download size={11} /> Sem limite de fotos
+                      </div>
+                    )}
                   </div>
 
                   {/* Modo edição */}
@@ -1261,7 +1285,23 @@ export default function ArquivosPage() {
                             onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
                           />
                         </div>
-
+                        {/* Limite de fotos */}
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-xs font-medium flex items-center gap-1" style={{ color: "var(--color-text-muted)" }}>
+                            <Download size={10} /> Limite de fotos
+                          </label>
+                          <input
+                            type="number"
+                            placeholder="Sem limite"
+                            min={1}
+                            value={shareMaxFotos}
+                            onChange={(e) => setShareMaxFotos(e.target.value === "" ? "" : Number(e.target.value))}
+                            className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                            style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text)", colorScheme: "dark" }}
+                            onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                            onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+                          />
+                        </div>
                       </div>
 
                       {shareError && (
@@ -1329,7 +1369,7 @@ export default function ArquivosPage() {
                     </div>
                   </div>
 
-                  {/* Duas colunas: validade + máx. acessos */}
+                  {/* Duas colunas: validade + limite de fotos */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1" style={{ color: "var(--color-text-muted)" }}>
@@ -1346,7 +1386,22 @@ export default function ArquivosPage() {
                         onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
                       />
                     </div>
-
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1" style={{ color: "var(--color-text-muted)" }}>
+                        <Download size={11} /> Limite de fotos
+                      </label>
+                      <input
+                        type="number"
+                        placeholder="Sem limite"
+                        min={1}
+                        value={shareMaxFotos}
+                        onChange={(e) => setShareMaxFotos(e.target.value === "" ? "" : Number(e.target.value))}
+                        className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                        style={{ background: "var(--color-surface-3)", border: "1px solid var(--color-border)", color: "var(--color-text)", colorScheme: "dark" }}
+                        onFocus={(e) => (e.target.style.borderColor = "var(--color-brand)")}
+                        onBlur={(e) => (e.target.style.borderColor = "var(--color-border)")}
+                      />
+                    </div>
                   </div>
 
                   <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>

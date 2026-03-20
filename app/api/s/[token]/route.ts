@@ -19,7 +19,7 @@ export async function POST(
   // Busca o compartilhamento pelo token
   const { data: share, error } = await admin
     .from("compartilhamentos")
-    .select("id, nome, storage_path, senha, ativo, pasta_id, user_id, expires_at, max_downloads, download_count")
+    .select("id, nome, storage_path, senha, ativo, pasta_id, user_id, expires_at, max_downloads, download_count, max_fotos_download")
     .eq("id", token)
     .eq("ativo", true)
     .single();
@@ -106,5 +106,6 @@ export async function POST(
     expiresAt: share.expires_at ?? null,
     maxDownloads: share.max_downloads ?? null,
     downloadCount: (share.download_count ?? 0) + (isInitialAccess ? 1 : 0),
+    maxFotosDownload: share.max_fotos_download ?? null,
   });
 }

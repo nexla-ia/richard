@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { Lock, Folder, X, ZoomIn, Images, Home, ChevronRight, Download, Loader2 } from "lucide-react";
 
+
 type PastaItem = { id: number; nome: string };
 type FotoItem  = { name: string; url: string; size?: number };
 type Crumb     = { id: number | null; nome: string };
@@ -27,9 +28,12 @@ export default function SharePage() {
   const [breadcrumb, setBreadcrumb] = useState<Crumb[]>([]);
   const [navLoading, setNavLoading] = useState(false);
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
+  const [maxFotosDownload, setMaxFotosDownload] = useState<number | null>(null);
+  const [downloadedCount, setDownloadedCount] = useState(0);
 
   async function handleDownload(e: React.MouseEvent, foto: FotoItem, idx: number) {
     e.stopPropagation();
+    if (maxFotosDownload !== null && downloadedCount >= maxFotosDownload) return;
     setDownloadingIdx(idx);
     try {
       const res = await fetch(foto.url);
@@ -40,6 +44,10 @@ export default function SharePage() {
       a.download = foto.name;
       a.click();
       URL.revokeObjectURL(url);
+      // track download in sessionStorage
+      const newCount = downloadedCount + 1;
+      setDownloadedCount(newCount);
+      sessionStorage.setItem(`dl_${token}`, String(newCount));
     } finally {
       setDownloadingIdx(null);
     }
@@ -88,6 +96,10 @@ export default function SharePage() {
       // Breadcrumb: se é a raiz, limpa; caso contrário mantém o stack
       if (pastaId === null) {
         setBreadcrumb([{ id: null, nome: data.nome }]);
+        // limite de fotos por sessão
+        setMaxFotosDownload(data.maxFotosDownload ?? null);
+        const saved = sessionStorage.getItem(`dl_${token}`);
+        setDownloadedCount(saved ? Number(saved) : 0);
       }
       setState("gallery");
     } else if (res.status === 401 && data.passwordRequired) {
@@ -250,6 +262,19 @@ export default function SharePage() {
             {totalItens} {totalItens === 1 ? "item" : "itens"}
           </p>
         </div>
+        {maxFotosDownload !== null && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium shrink-0"
+            style={{
+              background: downloadedCount >= maxFotosDownload ? "rgba(248,113,113,0.12)" : "rgba(167,139,250,0.12)",
+              border: `1px solid ${downloadedCount >= maxFotosDownload ? "rgba(248,113,113,0.3)" : "rgba(167,139,250,0.3)"}`,
+              color: downloadedCount >= maxFotosDownload ? "#f87171" : "#a78bfa",
+            }}>
+            <Download size={11} />
+            {downloadedCount >= maxFotosDownload
+              ? "Limite atingido"
+              : `${downloadedCount}/${maxFotosDownload} fotos`}
+          </div>
+        )}
       </div>
 
       {/* Breadcrumb */}
@@ -353,9 +378,10 @@ export default function SharePage() {
                         <div className="flex justify-end gap-1.5">
                           <button
                             onClick={(e) => handleDownload(e, foto, i)}
-                            title="Baixar foto"
+                            title={maxFotosDownload !== null && downloadedCount >= maxFotosDownload ? "Limite de downloads atingido" : "Baixar foto"}
+                            disabled={maxFotosDownload !== null && downloadedCount >= maxFotosDownload}
                             className="w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90"
-                            style={{ background: "rgba(255,255,255,0.15)" }}
+                            style={{ background: "rgba(255,255,255,0.15)", opacity: maxFotosDownload !== null && downloadedCount >= maxFotosDownload ? 0.35 : 1, cursor: maxFotosDownload !== null && downloadedCount >= maxFotosDownload ? "not-allowed" : "pointer" }}
                           >
                             {downloadingIdx === i
                               ? <Loader2 size={12} className="text-white animate-spin" />

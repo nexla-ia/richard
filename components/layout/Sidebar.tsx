@@ -37,10 +37,11 @@ interface SidebarProps {
   role?: string;
   userName?: string;
   userEmail?: string;
+  avatarUrl?: string;
   isMock?: boolean;
 }
 
-export default function Sidebar({ role, userName, userEmail, isMock }: SidebarProps) {
+export default function Sidebar({ role, userName, userEmail, avatarUrl, isMock }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const supabase = createClient();
@@ -118,10 +119,19 @@ export default function Sidebar({ role, userName, userEmail, isMock }: SidebarPr
       >
         <div className="flex items-center gap-3 mb-3">
           <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
-            style={{ background: "var(--color-brand)", color: "white" }}
+            className="w-8 h-8 rounded-full shrink-0 overflow-hidden flex items-center justify-center text-sm font-bold"
+            style={avatarUrl ? undefined : { background: "var(--color-brand)", color: "white" }}
           >
-            {(userName || userEmail || "U")[0].toUpperCase()}
+            {avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={avatarUrl.startsWith("data:") ? avatarUrl : `data:image/jpeg;base64,${avatarUrl}`}
+                alt="avatar"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              (userName || userEmail || "U")[0].toUpperCase()
+            )}
           </div>
           <div className="overflow-hidden">
             <p className="text-sm font-medium truncate" style={{ color: "var(--color-text)" }}>

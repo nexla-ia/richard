@@ -14,6 +14,7 @@ export default async function DashboardLayout({
   let role: string | undefined;
   let userName: string | undefined;
   let userEmail: string | undefined;
+  let avatarUrl: string | undefined;
   let isMock = false;
 
   if (mockAuth === "user" || mockAuth === "admin") {
@@ -33,6 +34,7 @@ export default async function DashboardLayout({
     role = profile?.role;
     userName = profile?.full_name;
     userEmail = user.email;
+    avatarUrl = profile?.avatar_url;
   }
 
   return (
@@ -41,6 +43,7 @@ export default async function DashboardLayout({
         role={role}
         userName={userName}
         userEmail={userEmail}
+        avatarUrl={avatarUrl}
         isMock={isMock}
       />
       <main className="flex-1 overflow-auto">
