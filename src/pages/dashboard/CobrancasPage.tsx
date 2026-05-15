@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import {
   Send, Users, CheckCircle, Clock, MessageSquare,
   Loader2, DollarSign, AlertCircle, ChevronDown, ChevronUp,
@@ -9,15 +9,19 @@ import { createClient } from '@/lib/supabase/client'
 import { cacheGet, cacheSet, cacheInvalidate } from '@/lib/cache'
 
 /* ─── Template CSV pra Clientes ─── */
-const CSV_TEMPLATE_CLIENTES = `Nome,Telefone,Valor,Dia de cobrança\nMaria Silva,11999990000,350.00,5\nJoão Pereira,21988887777,500.00,10\nAna Costa,31977776666,250.00,15`
-
+/* ─── Template XLSX pra Clientes ─── */
 function downloadClientesTemplate() {
-  // BOM UTF-8 pra Excel abrir com acentos certos
-  const blob = new Blob(['﻿' + CSV_TEMPLATE_CLIENTES], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'modelo_clientes.csv'; a.click()
-  URL.revokeObjectURL(url)
+  const data = [
+    ['Nome',         'Telefone',    'Valor', 'Dia de cobrança'],
+    ['Maria Silva',  '11999990000', 350.00,  5],
+    ['João Pereira', '21988887777', 500.00,  10],
+    ['Ana Costa',    '31977776666', 250.00,  15],
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 10 }, { wch: 16 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Clientes')
+  XLSX.writeFile(wb, 'modelo_clientes.xlsx')
 }
 
 type Status = 'pendente' | 'cobrado' | 'pago'
@@ -195,8 +199,9 @@ export default function CobrancasPage() {
   }
 
   async function deleteCliente(id: number) {
+    const { error } = await (supabase as any).from('clientes').delete().eq('id', id)
+    if (error) { alert(`Erro ao excluir: ${error.message}`); return }
     setClientes((p) => p.filter((c) => c.id !== id))
-    await (supabase as any).from('clientes').delete().eq('id', id)
     invalidate()
   }
 
@@ -214,14 +219,33 @@ export default function CobrancasPage() {
     if (!alvos.length) return
     setSendingMassa(true)
     const hoje = new Date().toLocaleDateString('pt-BR')
-    await Promise.all(alvos.map((c) =>
-      dispararWebhook({ nome: c.nome, telefone: c.telefone, valor: c.valor, dia_cobranca: c.dia_cobranca, mensagem: mensagemMassa || defaultMsg(c) })
-    ))
-    const ids = [...selectedIds]
-    setClientes((p) => p.map((c) => selectedIds.has(c.id) ? { ...c, status: 'cobrado', cobrado_em: hoje } : c))
-    await (supabase as any).from('clientes').update({ status: 'cobrado', cobrado_em: hoje }).in('id', ids)
-    invalidate()
-    setSendingMassa(false); setSentMassa(true); setSelectedIds(new Set())
+
+    // Envia sequencial — um por vez. Marca como cobrado SOMENTE os que webhook respondeu OK.
+    const idsOk: number[] = []
+    const idsFail: number[] = []
+    for (const c of alvos) {
+      const ok = await dispararWebhook({
+        nome: c.nome, telefone: c.telefone, valor: c.valor, dia_cobranca: c.dia_cobranca,
+        mensagem: mensagemMassa || defaultMsg(c),
+      })
+      if (ok) idsOk.push(c.id); else idsFail.push(c.id)
+    }
+
+    // Atualiza só os que tiveram sucesso
+    if (idsOk.length > 0) {
+      const { error } = await (supabase as any).from('clientes')
+        .update({ status: 'cobrado', cobrado_em: hoje }).in('id', idsOk)
+      if (!error) {
+        setClientes((p) => p.map((c) => idsOk.includes(c.id) ? { ...c, status: 'cobrado', cobrado_em: hoje } : c))
+        invalidate()
+      }
+    }
+
+    if (idsFail.length > 0) {
+      alert(`${idsOk.length} enviado(s) · ${idsFail.length} falhou(aram). Verifique a conexão.`)
+    }
+
+    setSendingMassa(false); setSentMassa(idsOk.length > 0); setSelectedIds(new Set())
     setTimeout(() => setSentMassa(false), 3000)
   }
 
@@ -860,7 +884,7 @@ export default function CobrancasPage() {
                   <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
                     style={{ background: 'var(--color-brand)', color: 'white' }}>1</span>
                   <div className="min-w-0">
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo CSV</p>
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o Modelo XLSX</p>
                     <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 1 }}>Abra no Excel ou Google Planilhas e preencha os clientes</p>
                   </div>
                 </div>

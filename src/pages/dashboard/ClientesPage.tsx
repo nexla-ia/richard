@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+﻿import { useState, useEffect, useMemo, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cacheGet, cacheSet, cacheInvalidate } from '@/lib/cache'
 import {
@@ -8,15 +8,19 @@ import {
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 
-/* ─── Template CSV pra Clientes ─── */
-const CSV_TEMPLATE_CLIENTES = `Nome,Telefone,Valor,Dia de cobrança\nMaria Silva,11999990000,350.00,5\nJoão Pereira,21988887777,500.00,10\nAna Costa,31977776666,250.00,15`
-
+/* ─── Template XLSX pra Clientes ─── */
 function downloadClientesTemplate() {
-  const blob = new Blob(['﻿' + CSV_TEMPLATE_CLIENTES], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'modelo_clientes.csv'; a.click()
-  URL.revokeObjectURL(url)
+  const data = [
+    ['Nome',         'Telefone',    'Valor', 'Dia de cobrança'],
+    ['Maria Silva',  '11999990000', 350.00,  5],
+    ['João Pereira', '21988887777', 500.00,  10],
+    ['Ana Costa',    '31977776666', 250.00,  15],
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 22 }, { wch: 16 }, { wch: 10 }, { wch: 16 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Clientes')
+  XLSX.writeFile(wb, 'modelo_clientes.xlsx')
 }
 
 type Status = 'pendente' | 'cobrado' | 'pago'
@@ -209,8 +213,13 @@ export default function ClientesPage() {
 
   async function deleteCliente(c: Cliente) {
     if (!confirm(`Excluir ${c.nome}? Esta ação não pode ser desfeita.`)) return
+    // Primeiro deleta no DB, só remove da UI se sucesso
+    const { error } = await (supabase as any).from('clientes').delete().eq('id', c.id)
+    if (error) {
+      alert(`Erro ao excluir: ${error.message}`)
+      return
+    }
     setClientes((p) => p.filter((x) => x.id !== c.id))
-    await (supabase as any).from('clientes').delete().eq('id', c.id)
     invalidate()
   }
 
@@ -556,7 +565,7 @@ export default function ClientesPage() {
                   <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
                     style={{ background: 'var(--color-brand)', color: 'white' }}>1</span>
                   <div>
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo CSV</p>
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo</p>
                     <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 1 }}>Abra no Excel ou Google Planilhas e preencha</p>
                   </div>
                 </div>

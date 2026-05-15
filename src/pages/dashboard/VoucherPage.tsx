@@ -8,15 +8,19 @@ import {
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 
-/* ─── Template CSV pra Vouchers ─── */
-const CSV_TEMPLATE_VOUCHERS = `Codigo,Valor,Descricao\nPROMO50,50.00,50 reais de desconto\nBLACK2026,100.00,Black Friday 2026\nNATAL25,25.00,Natal 25 off`
-
+/* ─── Template XLSX pra Vouchers ─── */
 function downloadVouchersTemplate() {
-  const blob = new Blob(['﻿' + CSV_TEMPLATE_VOUCHERS], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'modelo_vouchers.csv'; a.click()
-  URL.revokeObjectURL(url)
+  const data = [
+    ['Codigo',    'Valor',  'Descricao'],
+    ['PROMO50',   50.00,    '50 reais de desconto'],
+    ['BLACK2026', 100.00,   'Black Friday 2026'],
+    ['NATAL25',   25.00,    'Natal 25 off'],
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 18 }, { wch: 10 }, { wch: 36 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Vouchers')
+  XLSX.writeFile(wb, 'modelo_vouchers.xlsx')
 }
 
 const WEBHOOK_URL = 'https://n8n.nexladesenvolvimento.com.br/webhook/0b4f66aa-9c8f-49e8-bb6b-91371f390ead'
@@ -267,9 +271,10 @@ function VouchersTab({ list, setList, loading }: { list: Voucher[]; setList: (l:
 
   async function remove(v: Voucher) {
     if (!confirm(`Excluir voucher ${v.codigo}?`)) return
+    const { error } = await (supabase as any).from('vouchers').delete().eq('id', v.id)
+    if (error) { alert(`Erro ao excluir: ${error.message}`); return }
     const updated = list.filter((x) => x.id !== v.id)
     setList(updated); cacheSet('vouchers', updated)
-    await (supabase as any).from('vouchers').delete().eq('id', v.id)
   }
 
   return (
@@ -491,7 +496,7 @@ function VouchersTab({ list, setList, loading }: { list: Voucher[]; setList: (l:
                   <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
                     style={{ background: 'var(--color-brand)', color: 'white' }}>1</span>
                   <div className="min-w-0">
-                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo CSV</p>
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo</p>
                     <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 1 }}>Abra no Excel ou Google Planilhas e preencha</p>
                   </div>
                 </div>
@@ -660,8 +665,9 @@ function MensagensTab({ list, setList, loading, vouchers }: { list: Mensagem[]; 
 
   async function remove(m: Mensagem) {
     if (!confirm(`Excluir mensagem "${m.titulo}"?`)) return
+    const { error } = await (supabase as any).from('voucher_mensagens').delete().eq('id', m.id)
+    if (error) { alert(`Erro ao excluir: ${error.message}`); return }
     const u = list.filter((x) => x.id !== m.id); setList(u); cacheSet('voucher_mensagens', u)
-    await (supabase as any).from('voucher_mensagens').delete().eq('id', m.id)
   }
 
   return (

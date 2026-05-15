@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/contexts/AuthContext'
+import { cacheInvalidate } from '@/lib/cache'
 import {
   LayoutDashboard, Ticket, CreditCard, Users,
   Settings, Shield, LogOut, Camera, Menu, X,
@@ -24,6 +25,8 @@ export default function Sidebar() {
   const [open, setOpen] = useState(false)
 
   async function handleLogout() {
+    // Limpa todo cache em memória pra não vazar dados entre sessões
+    cacheInvalidate('')
     await supabase.auth.signOut()
     navigate('/login')
   }

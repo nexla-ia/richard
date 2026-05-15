@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+﻿import { useState, useRef, useEffect, useMemo } from 'react'
 import { Search, X, Trash2, Plus, Upload, Download, FileSpreadsheet, CheckCheck, Loader2, AlertCircle } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { createClient } from '@/lib/supabase/client'
@@ -22,14 +22,18 @@ function monthLabel(ym: string, form: 'long' | 'short' = 'long') {
   return { month: month.charAt(0).toUpperCase() + month.slice(1), year: y }
 }
 
-const CSV_TEMPLATE = `Nome,Valor,Data,O que foi feito\nConsultoria Empresa X,1500.00,2025-05-01,Reunião e análise\nProjeto Site,800.00,2025-05-10,Desenvolvimento landing page`
-
+/* ─── Template XLSX pra Gestões ─── */
 function downloadTemplate() {
-  const blob = new Blob(['﻿' + CSV_TEMPLATE], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'modelo_gestoes.csv'; a.click()
-  URL.revokeObjectURL(url)
+  const data = [
+    ['Nome',                  'Valor',  'Data',       'O que foi feito'],
+    ['Consultoria Empresa X', 1500.00,  '2025-05-01', 'Reunião e análise'],
+    ['Projeto Site',          800.00,   '2025-05-10', 'Desenvolvimento landing page'],
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(data)
+  ws['!cols'] = [{ wch: 24 }, { wch: 10 }, { wch: 12 }, { wch: 32 }]
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Gestões')
+  XLSX.writeFile(wb, 'modelo_gestoes.xlsx')
 }
 
 /* ── Célula editável ── */
