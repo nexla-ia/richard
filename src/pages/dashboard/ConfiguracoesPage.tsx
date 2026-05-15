@@ -76,21 +76,27 @@ export default function ConfiguracoesPage() {
     <div className="max-w-3xl">
 
       {/* ── Header ── */}
-      <div className="flex items-center justify-between mb-8 animate-fade-in">
+      <header className="flex items-end justify-between gap-6 flex-wrap mb-6 pb-5 animate-fade-in" style={{ borderBottom: '1px solid var(--color-border)' }}>
         <div>
-          <p className="text-xs font-bold tracking-[0.2em] uppercase mb-1" style={{ color: 'var(--color-brand)' }}>
-            Automação de Cobranças
-          </p>
-          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '2rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--color-text)', lineHeight: 1 }}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-6 h-px" style={{ background: 'var(--color-brand)' }} />
+            <p className="text-[10px] font-bold tracking-[0.25em] uppercase" style={{ color: 'var(--color-brand)' }}>
+              Automação de Cobranças
+            </p>
+          </div>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.75rem, 2.6vw, 2.25rem)', fontWeight: 700, letterSpacing: '-0.03em', color: 'var(--color-text)', lineHeight: 1.05 }}>
             Configurações
           </h1>
+          <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>
+            Configure quando e como o sistema deve enviar cobranças automáticas pelo WhatsApp.
+          </p>
         </div>
         <button
           onClick={salvar}
           disabled={saving || loading}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all active:scale-[0.97]"
           style={saved
-            ? { background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)' }
+            ? { background: 'rgba(74,222,128,0.1)', color: '#16a34a', border: '1px solid rgba(74,222,128,0.3)' }
             : saving || loading
             ? { background: 'var(--color-surface-3)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }
             : { background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 20px color-mix(in srgb, var(--color-brand) 30%, transparent)' }
@@ -100,7 +106,7 @@ export default function ConfiguracoesPage() {
             : saving || loading ? <><Loader2 size={14} className="animate-spin" /> {loading ? 'Carregando...' : 'Salvando...'}</>
             : <><Save size={14} /> Salvar configurações</>}
         </button>
-      </div>
+      </header>
 
       <div className="flex flex-col gap-4">
 
@@ -290,7 +296,7 @@ export default function ConfiguracoesPage() {
                   <div className="flex gap-2 mb-4">
                     {[
                       { var: '{nome}',  label: 'Nome do cliente', color: '#60a5fa' },
-                      { var: '{valor}', label: 'Valor da cobrança', color: '#4ade80' },
+                      { var: '{valor}', label: 'Valor da cobrança', color: '#16a34a' },
                       { var: '{dia}',   label: 'Dia de vencimento', color: '#f59e0b' },
                     ].map(({ var: v, label, color }) => (
                       <button
@@ -337,7 +343,7 @@ export default function ConfiguracoesPage() {
                         style={{ background: 'var(--color-brand)', color: 'white' }}>SC</div>
                       <div>
                         <p className="text-xs font-semibold text-white">Studio Charme</p>
-                        <p className="text-[10px]" style={{ color: '#4ade80' }}>● online</p>
+                        <p className="text-[10px]" style={{ color: '#16a34a' }}>● online</p>
                       </div>
                     </div>
 
@@ -360,7 +366,7 @@ export default function ConfiguracoesPage() {
                   <div className="mt-3 space-y-1.5">
                     {[
                       { var: '{nome}',  val: 'Maria Silva',   color: '#60a5fa' },
-                      { var: '{valor}', val: 'R$ 350,00',     color: '#4ade80' },
+                      { var: '{valor}', val: 'R$ 350,00',     color: '#16a34a' },
                       { var: '{dia}',   val: String(diaMes),  color: '#f59e0b' },
                     ].map(({ var: v, val, color }) => (
                       <div key={v} className="flex items-center gap-2 text-xs">

@@ -2,9 +2,23 @@ import { useState, useEffect, useRef } from 'react'
 import {
   Send, Users, CheckCircle, Clock, MessageSquare,
   Loader2, DollarSign, AlertCircle, ChevronDown, ChevronUp,
-  Plus, X, Trash2, Upload, FileSpreadsheet, CheckCheck,
+  Plus, X, Trash2, Upload, FileSpreadsheet, CheckCheck, Download,
 } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { createClient } from '@/lib/supabase/client'
+import { cacheGet, cacheSet, cacheInvalidate } from '@/lib/cache'
+
+/* ─── Template CSV pra Clientes ─── */
+const CSV_TEMPLATE_CLIENTES = `Nome,Telefone,Valor,Dia de cobrança\nMaria Silva,11999990000,350.00,5\nJoão Pereira,21988887777,500.00,10\nAna Costa,31977776666,250.00,15`
+
+function downloadClientesTemplate() {
+  // BOM UTF-8 pra Excel abrir com acentos certos
+  const blob = new Blob(['﻿' + CSV_TEMPLATE_CLIENTES], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = 'modelo_clientes.csv'; a.click()
+  URL.revokeObjectURL(url)
+}
 
 type Status = 'pendente' | 'cobrado' | 'pago'
 
@@ -21,12 +35,15 @@ type Cliente = {
 const WEBHOOK_URL = 'https://n8n.nexladesenvolvimento.com.br/webhook/0b4f66aa-9c8f-49e8-bb6b-91371f390ead'
 
 const STATUS_CFG = {
-  pendente: { label: 'Pendente', color: '#f59e0b', bg: 'rgba(245,158,11,0.1)',  border: 'rgba(245,158,11,0.25)', icon: Clock },
-  cobrado:  { label: 'Cobrado',  color: '#60a5fa', bg: 'rgba(96,165,250,0.1)',  border: 'rgba(96,165,250,0.25)', icon: Send },
+  pendente: { label: 'Aguardando', color: '#f59e0b', bg: 'rgba(245,158,11,0.1)',  border: 'rgba(245,158,11,0.25)', icon: Clock },
+  cobrado:  { label: 'Enviado',    color: '#60a5fa', bg: 'rgba(96,165,250,0.1)',  border: 'rgba(96,165,250,0.25)', icon: Send },
   pago:     { label: 'Pago',     color: '#34d399', bg: 'rgba(52,211,153,0.1)',  border: 'rgba(52,211,153,0.25)', icon: CheckCircle },
 } satisfies Record<Status, { label: string; color: string; bg: string; border: string; icon: React.ElementType }>
 
 function fmt(v: number) { return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) }
+function todayLabel() {
+  return new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })
+}
 function defaultMsg(c: Cliente) {
   return `Olá ${c.nome}! Passando para lembrar que sua cobrança de ${fmt(c.valor)} vence no dia ${c.dia_cobranca}. Qualquer dúvida, estou à disposição!`
 }
@@ -88,8 +105,9 @@ const COUNTRIES = [
 export default function CobrancasPage() {
   const supabase = createClient()
 
-  const [clientes, setClientes] = useState<Cliente[]>([])
-  const [loading, setLoading] = useState(true)
+  const cachedClientes = cacheGet<Cliente[]>('clientes')
+  const [clientes, setClientes] = useState<Cliente[]>(cachedClientes ?? [])
+  const [loading, setLoading] = useState(!cachedClientes)
   const [pageTab, setPageTab] = useState<PageTab>('cobrancas')
   const [chargeMode, setChargeMode] = useState<ChargeMode>('individual')
   const [filterStatus, setFilterStatus] = useState<Status | 'todos'>('todos')
@@ -115,25 +133,26 @@ export default function CobrancasPage() {
   const [importRows, setImportRows] = useState<{ nome: string; telefone: string; valor: string; dia_cobranca: string }[]>([])
   const [importLoading, setImportLoading] = useState(false)
   const [importDone, setImportDone] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importDragOver, setImportDragOver] = useState(false)
   const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    let uid: string | null = null
     async function load() {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-      uid = session.user.id
-      const { data } = await supabase.from('clientes').select('*').eq('user_id', uid).order('created_at', { ascending: false })
-      if (data) setClientes(data as Cliente[])
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) { setLoading(false); return }
+        const { data } = await (supabase as any).from('clientes').select('*').eq('user_id', session.user.id).order('created_at', { ascending: false })
+        const list = (data as Cliente[]) ?? []
+        cacheSet('clientes', list)
+        setClientes(list)
+      } catch (err) { console.error('[Cobrancas]', err) }
       setLoading(false)
     }
     load()
-    const channel = supabase
-      .channel('clientes-rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'clientes' }, () => { load() })
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
   }, [])
+
+  function invalidate() { cacheInvalidate('clientes'); cacheInvalidate('dashboard') }
 
   function openCtxMenu(e: React.MouseEvent, id: number) {
     e.preventDefault()
@@ -145,7 +164,7 @@ export default function CobrancasPage() {
     if (!form.nome.trim() || isNaN(v)) return
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
-    const { data, error } = await supabase.from('clientes').insert({
+    const { data, error } = await (supabase as any).from('clientes').insert({
       user_id: user.id,
       nome: form.nome.trim(),
       telefone: form.telefone.trim() ? `${country.code} ${form.telefone.trim()}` : '',
@@ -153,6 +172,7 @@ export default function CobrancasPage() {
       dia_cobranca: Math.min(28, Math.max(1, Number(form.dia_cobranca) || 1)),
       status: 'pendente',
     }).select().single()
+    invalidate()
     if (!error && data) setClientes((p) => [data as Cliente, ...p])
     setForm({ nome: '', telefone: '', valor: '', dia_cobranca: '5' })
     setShowModal(false)
@@ -170,12 +190,14 @@ export default function CobrancasPage() {
 
   async function setStatus(id: number, status: Status, cobrado_em?: string) {
     setClientes((p) => p.map((c) => c.id === id ? { ...c, status, ...(cobrado_em ? { cobrado_em } : {}) } : c))
-    await supabase.from('clientes').update({ status, ...(cobrado_em ? { cobrado_em } : {}) }).eq('id', id)
+    await (supabase as any).from('clientes').update({ status, ...(cobrado_em ? { cobrado_em } : {}) }).eq('id', id)
+    invalidate()
   }
 
   async function deleteCliente(id: number) {
     setClientes((p) => p.filter((c) => c.id !== id))
-    await supabase.from('clientes').delete().eq('id', id)
+    await (supabase as any).from('clientes').delete().eq('id', id)
+    invalidate()
   }
 
   async function cobrarUm(c: Cliente) {
@@ -197,7 +219,8 @@ export default function CobrancasPage() {
     ))
     const ids = [...selectedIds]
     setClientes((p) => p.map((c) => selectedIds.has(c.id) ? { ...c, status: 'cobrado', cobrado_em: hoje } : c))
-    await supabase.from('clientes').update({ status: 'cobrado', cobrado_em: hoje }).in('id', ids)
+    await (supabase as any).from('clientes').update({ status: 'cobrado', cobrado_em: hoje }).in('id', ids)
+    invalidate()
     setSendingMassa(false); setSentMassa(true); setSelectedIds(new Set())
     setTimeout(() => setSentMassa(false), 3000)
   }
@@ -211,22 +234,47 @@ export default function CobrancasPage() {
     setStatus(c.id, c.status === 'cobrado' ? 'pago' : 'cobrado')
   }
 
+  function processFile(file: File) {
+    setImportError(null)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const buf = ev.target?.result
+        const wb  = XLSX.read(buf, { type: 'array', cellDates: false })
+        const ws  = wb.Sheets[wb.SheetNames[0]]
+        if (!ws) throw new Error('Planilha vazia')
+        const matrix: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' })
+        const rowsArr = matrix.filter((r) => r.some((c) => String(c ?? '').trim()))
+        if (rowsArr.length === 0) throw new Error('Sem dados na planilha')
+
+        // detecta cabeçalho — coluna C (valor) deve ser número
+        const skipHeader = isNaN(parseFloat(String(rowsArr[0][2] ?? '').replace(',', '.')))
+        const dataRows   = skipHeader ? rowsArr.slice(1) : rowsArr
+
+        const parsed = dataRows.map((cols) => ({
+          nome:         String(cols[0] ?? '').trim(),
+          telefone:     String(cols[1] ?? '').trim().replace(/\D/g, ''),
+          valor:        String(cols[2] ?? '').trim(),
+          dia_cobranca: String(cols[3] ?? '5').trim(),
+        })).filter((r) => r.nome)
+
+        if (parsed.length === 0) throw new Error('Nenhum cliente válido. Verifique se a planilha tem as colunas: Nome, Telefone, Valor, Dia de cobrança.')
+
+        setImportRows(parsed)
+        setImportDone(false)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Erro ao ler arquivo'
+        setImportError(msg)
+        setImportRows([])
+      }
+    }
+    reader.onerror = () => setImportError('Não foi possível ler o arquivo.')
+    reader.readAsArrayBuffer(file)
+  }
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string
-      const lines = text.split(/\r?\n/).filter((l) => l.trim())
-      const start = isNaN(parseFloat(lines[0]?.split(/[,;]/)[2]?.replace(',', '.'))) ? 1 : 0
-      const rows = lines.slice(start).map((line) => {
-        const cols = line.split(/[,;]/).map((c) => c.trim().replace(/^"|"$/g, ''))
-        return { nome: cols[0] ?? '', telefone: cols[1] ?? '', valor: cols[2] ?? '', dia_cobranca: cols[3] ?? '5' }
-      }).filter((r) => r.nome)
-      setImportRows(rows)
-      setImportDone(false)
-    }
-    reader.readAsText(file)
+    processFile(file)
     e.target.value = ''
   }
 
@@ -244,7 +292,8 @@ export default function CobrancasPage() {
       dia_cobranca: Math.min(28, Math.max(1, parseInt(r.dia_cobranca) || 5)),
       status: 'pendente' as Status,
     }))
-    const { data } = await supabase.from('clientes').insert(toInsert).select()
+    const { data } = await (supabase as any).from('clientes').insert(toInsert).select()
+    invalidate()
     if (data) setClientes((p) => [...(data as Cliente[]), ...p])
     setImportLoading(false)
     setImportDone(true)
@@ -257,58 +306,197 @@ export default function CobrancasPage() {
     borderBottom: '1px solid var(--color-border)',
   }
 
+  /* ── Cálculos pra banner resumo ── */
+  const totalReceber = totals.pendente + totals.cobrado
+  const today = new Date().getDate()
+  const venceEssaSemana = clientes.filter((c) => {
+    if (c.status === 'pago') return false
+    const diff = c.dia_cobranca - today
+    return diff >= 0 && diff <= 7
+  })
+
   return (
     <div>
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+      {/* ═══ Header ═══ */}
+      <header className="flex items-end justify-between gap-6 flex-wrap mb-5 pb-4" style={{ borderBottom: '1px solid var(--color-border)' }}>
         <div>
-          <h1 className="text-3xl font-bold mb-1" style={{ fontFamily: 'var(--font-display)' }}>Cobranças</h1>
-          <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Gerencie e acompanhe o status de cada cliente</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button onClick={() => { setShowImport(true); setImportRows([]); setImportDone(false) }}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
-            style={{ background: 'var(--color-surface-3)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.borderColor = 'rgba(99,102,241,0.4)' }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--color-text-muted)'; e.currentTarget.style.borderColor = 'var(--color-border)' }}>
-            <FileSpreadsheet size={15} /> Importar planilha
-          </button>
-          <button onClick={() => setShowModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
-            style={{ background: 'var(--color-brand)', color: 'white' }}>
-            <Plus size={15} /> Novo cliente
-          </button>
-          <div className="flex rounded-xl p-1 gap-1" style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)' }}>
-            {(['cobrancas', 'pagamentos'] as PageTab[]).map((tab) => (
-              <button key={tab} onClick={() => setPageTab(tab)}
-                className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-all active:scale-[0.95] capitalize"
-                style={pageTab === tab ? { background: 'var(--color-brand)', color: 'white' } : { color: 'var(--color-text-muted)' }}>
-                {tab === 'cobrancas' ? 'Cobranças' : 'Pagamentos'}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-6 h-px" style={{ background: 'var(--color-brand)' }} />
+            <p className="text-[10px] font-bold tracking-[0.25em] uppercase" style={{ color: 'var(--color-brand)' }}>
+              Clientes & Cobranças
+            </p>
           </div>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(1.75rem, 2.6vw, 2.25rem)', fontWeight: 700, lineHeight: 1.05, letterSpacing: '-0.03em', color: 'var(--color-text)' }}>
+            Cobranças
+          </h1>
+        </div>
+
+        {/* Ações + data */}
+        <div className="flex items-center gap-4">
+          <p className="hidden md:block text-xs capitalize" style={{ color: 'var(--color-text-muted)' }}>
+            {todayLabel()}
+          </p>
+          <div className="w-px h-8 self-center hidden md:block" style={{ background: 'var(--color-border)' }} />
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setShowImport(true); setImportRows([]); setImportDone(false); setImportError(null) }}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium transition-all"
+              style={{ background: 'var(--color-surface-2)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.borderColor = 'var(--color-brand)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--color-text-muted)'; e.currentTarget.style.borderColor = 'var(--color-border)' }}>
+              <FileSpreadsheet size={14} /> Importar
+            </button>
+            <button onClick={() => setShowModal(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-[0.97]"
+              style={{ background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 14px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' }}>
+              <Plus size={14} /> Novo cliente
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* ═══ Banner resumo destaque ═══ */}
+      {clientes.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5 animate-fade-in">
+          {/* A receber */}
+          <div className="rounded-2xl p-5 relative overflow-hidden"
+            style={{ background: 'linear-gradient(135deg, color-mix(in srgb, var(--color-brand) 8%, var(--color-surface-2)), var(--color-surface-2))', border: '1px solid color-mix(in srgb, var(--color-brand) 25%, var(--color-border))' }}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-bold tracking-[0.18em] uppercase" style={{ color: 'var(--color-text-muted)' }}>
+                Total a receber
+              </p>
+              <DollarSign size={14} style={{ color: 'var(--color-brand)' }} />
+            </div>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 700, lineHeight: 1, color: 'var(--color-brand)', letterSpacing: '-0.02em' }}>
+              {fmt(totalReceber)}
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              {clientes.filter((c) => c.status !== 'pago').length} cobrança{clientes.filter((c) => c.status !== 'pago').length !== 1 ? 's' : ''} em aberto
+            </p>
+          </div>
+
+          {/* Vencendo essa semana */}
+          <div className="rounded-2xl p-5"
+            style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-bold tracking-[0.18em] uppercase" style={{ color: 'var(--color-text-muted)' }}>
+                Próximos 7 dias
+              </p>
+              <Clock size={14} style={{ color: '#f59e0b' }} />
+            </div>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 700, lineHeight: 1, color: 'var(--color-text)', letterSpacing: '-0.02em' }}>
+              {venceEssaSemana.length} <span className="text-sm font-normal" style={{ color: 'var(--color-text-muted)' }}>cliente{venceEssaSemana.length !== 1 ? 's' : ''}</span>
+            </p>
+            <p className="text-xs mt-1" style={{ color: '#f59e0b', fontWeight: 600 }}>
+              {fmt(venceEssaSemana.reduce((a, c) => a + c.valor, 0))} pra cobrar
+            </p>
+          </div>
+
+          {/* Total de clientes */}
+          <div className="rounded-2xl p-5"
+            style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-bold tracking-[0.18em] uppercase" style={{ color: 'var(--color-text-muted)' }}>
+                Total de clientes
+              </p>
+              <Users size={14} style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 700, lineHeight: 1, color: 'var(--color-text)', letterSpacing: '-0.02em' }}>
+              {clientes.length}
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+              {clientes.filter((c) => c.status === 'pago').length} já pagaram esse mês
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Tabs Cobranças/Pagamentos como nav segmented ═══ */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="inline-flex rounded-xl p-1 gap-1" style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)' }}>
+          {(['cobrancas', 'pagamentos'] as PageTab[]).map((tab) => (
+            <button key={tab} onClick={() => setPageTab(tab)}
+              className="px-5 py-2 rounded-lg text-sm font-bold transition-all active:scale-[0.96]"
+              style={pageTab === tab
+                ? { background: 'var(--color-surface-2)', color: 'var(--color-brand)', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }
+                : { color: 'var(--color-text-muted)' }}>
+              {tab === 'cobrancas' ? 'Cobrar Clientes' : 'Histórico de Pagamentos'}
+            </button>
+          ))}
+        </div>
+
+        {/* Legenda inline dos status (substitui banner amarelo) */}
+        <div className="hidden md:flex items-center gap-3 text-[11px]" style={{ color: 'var(--color-text-muted)' }}>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ background: '#f59e0b' }} />
+            <strong style={{ color: 'var(--color-text)' }}>Aguardando</strong> não cobrou
+          </span>
+          <span style={{ color: 'var(--color-border)' }}>·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ background: '#60a5fa' }} />
+            <strong style={{ color: 'var(--color-text)' }}>Enviado</strong> aguardando pagamento
+          </span>
+          <span style={{ color: 'var(--color-border)' }}>·</span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ background: '#16a34a' }} />
+            <strong style={{ color: 'var(--color-text)' }}>Pago</strong> finalizado
+          </span>
         </div>
       </div>
 
-      {/* Stats */}
+      {/* ═══ Stats cards ═══ */}
       <div className="grid grid-cols-3 gap-3 mb-6">
         {(['pendente', 'cobrado', 'pago'] as Status[]).map((key) => {
           const cfg = STATUS_CFG[key]; const Icon = cfg.icon
           const count = clientes.filter((c) => c.status === key).length
+          const isActive = filterStatus === key
           return (
-            <div key={key} className="flex items-center gap-4 px-5 py-4 rounded-2xl"
-              style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', borderLeft: `3px solid ${cfg.color}` }}>
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: cfg.bg }}>
-                <Icon size={18} style={{ color: cfg.color }} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs font-medium mb-0.5" style={{ color: 'var(--color-text-muted)' }}>{cfg.label}</p>
-                <p className="text-xl font-bold leading-none" style={{ fontFamily: 'var(--font-display)' }}>
-                  {count} <span className="text-xs font-normal" style={{ color: 'var(--color-text-muted)' }}>cliente{count !== 1 ? 's' : ''}</span>
+            <button
+              key={key}
+              onClick={() => setFilterStatus(isActive ? 'todos' : key)}
+              className="relative p-5 rounded-2xl text-left transition-all hover:-translate-y-0.5 overflow-hidden group"
+              style={{
+                background: 'var(--color-surface-2)',
+                border: `1px solid ${isActive ? cfg.color : 'var(--color-border)'}`,
+                boxShadow: isActive ? `0 8px 24px -12px ${cfg.color}` : '0 1px 0 rgba(0,0,0,0.02)',
+              }}
+            >
+              {/* Faixa lateral */}
+              <span className="absolute left-0 top-5 bottom-5 w-0.75 rounded-r-full" style={{ background: cfg.color }} />
+
+              {/* Header: label + icon */}
+              <div className="flex items-center justify-between mb-3 pl-2">
+                <p className="text-[10px] font-bold tracking-[0.18em] uppercase" style={{ color: 'var(--color-text-muted)' }}>
+                  {cfg.label}
                 </p>
-                <p className="text-xs mt-1 font-medium" style={{ color: cfg.color }}>{fmt(totals[key])}</p>
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                  style={{ background: `color-mix(in srgb, ${cfg.color} 12%, transparent)` }}>
+                  <Icon size={14} style={{ color: cfg.color }} />
+                </div>
               </div>
-            </div>
+
+              {/* Número grande */}
+              <div className="pl-2 flex items-baseline gap-2 mb-1">
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '2rem', fontWeight: 700, lineHeight: 1, color: cfg.color, letterSpacing: '-0.02em' }}>
+                  {count}
+                </span>
+                <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  cliente{count !== 1 ? 's' : ''}
+                </span>
+              </div>
+
+              {/* Valor total */}
+              <p className="text-sm font-semibold pl-2" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-text)' }}>
+                {fmt(totals[key])}
+              </p>
+
+              {/* Indicador filtro ativo */}
+              {isActive && (
+                <span className="absolute top-3 right-3 text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded uppercase"
+                  style={{ background: cfg.color, color: 'white' }}>
+                  Filtrado
+                </span>
+              )}
+            </button>
           )
         })}
       </div>
@@ -317,38 +505,92 @@ export default function CobrancasPage() {
       {pageTab === 'cobrancas' && (
         <div>
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div className="flex rounded-xl p-1 gap-1" style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)' }}>
-              {([['individual', MessageSquare, 'Um por vez'], ['massa', Users, 'Em massa']] as const).map(([mode, Icon, label]) => (
-                <button key={mode} onClick={() => setChargeMode(mode)}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-[0.95]"
-                  style={chargeMode === mode ? { background: 'var(--color-brand)', color: 'white' } : { color: 'var(--color-text-muted)' }}>
-                  <Icon size={13} /> {label}
-                </button>
-              ))}
-            </div>
+            {/* Modo de cobrança */}
             <div className="flex items-center gap-2">
-              {(['todos', 'pendente', 'cobrado', 'pago'] as const).map((s) => (
-                <button key={s} onClick={() => setFilterStatus(s)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-[0.95]"
-                  style={filterStatus === s
-                    ? { background: 'var(--color-brand)', color: 'white' }
-                    : { background: 'var(--color-surface-3)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}>
-                  {s === 'todos' ? 'Todos' : STATUS_CFG[s].label}
-                  {s !== 'todos' && <span className="ml-1.5 opacity-60">{clientes.filter((c) => c.status === s).length}</span>}
-                </button>
-              ))}
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] mr-1" style={{ color: 'var(--color-text-muted)' }}>
+                Modo:
+              </span>
+              <div className="inline-flex rounded-xl p-1 gap-1" style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)' }}>
+                {([['individual', MessageSquare, 'Um por vez'], ['massa', Users, 'Em massa']] as const).map(([mode, Icon, label]) => (
+                  <button key={mode} onClick={() => setChargeMode(mode)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-[0.96]"
+                    style={chargeMode === mode
+                      ? { background: 'var(--color-surface-2)', color: 'var(--color-brand)', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }
+                      : { color: 'var(--color-text-muted)' }}>
+                    <Icon size={13} /> {label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {/* Indicador de filtro ativo + clear */}
+            {filterStatus !== 'todos' ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold"
+                style={{ background: `color-mix(in srgb, ${STATUS_CFG[filterStatus as Status].color} 10%, transparent)`, border: `1px solid color-mix(in srgb, ${STATUS_CFG[filterStatus as Status].color} 30%, transparent)`, color: STATUS_CFG[filterStatus as Status].color }}>
+                <span>Filtrado por: {STATUS_CFG[filterStatus as Status].label}</span>
+                <button onClick={() => setFilterStatus('todos')} className="ml-1 opacity-70 hover:opacity-100">
+                  <X size={11} />
+                </button>
+              </div>
+            ) : (
+              <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                Mostrando todos · clique num card acima para filtrar
+              </span>
+            )}
           </div>
 
           {chargeMode === 'individual' && (
-            <div className="rounded-2xl overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
-              <div className="grid text-xs font-semibold uppercase tracking-wider px-5 py-3"
-                style={{ ...thStyle, gridTemplateColumns: '1fr 140px 90px 120px 120px' }}>
+            <div className="rounded-2xl overflow-hidden"
+              style={{ border: '1px solid var(--color-border)', background: 'var(--color-surface-2)', boxShadow: '0 1px 0 rgba(0,0,0,0.02), 0 8px 32px -16px rgba(0,0,0,0.06)' }}>
+              <div className="flex items-center justify-between px-5 py-3.5"
+                style={{ background: 'var(--color-surface-3)', borderBottom: '1px solid var(--color-border)' }}>
+                <div>
+                  <p style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '0.95rem', color: 'var(--color-text)' }}>
+                    Lista de clientes
+                  </p>
+                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                    {listaCobrar.length} {listaCobrar.length === 1 ? 'cliente' : 'clientes'} {filterStatus !== 'todos' ? `com status "${STATUS_CFG[filterStatus as Status].label.toLowerCase()}"` : 'no total'}
+                  </p>
+                </div>
+                <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  Total: <strong style={{ color: 'var(--color-brand)', fontFamily: 'var(--font-display)' }}>
+                    {fmt(listaCobrar.reduce((a, c) => a + c.valor, 0))}
+                  </strong>
+                </p>
+              </div>
+              <div className="grid text-[10px] font-bold uppercase tracking-[0.14em] px-5 py-2.5"
+                style={{ ...thStyle, gridTemplateColumns: '1fr 140px 90px 120px 120px', background: 'var(--color-surface-2)' }}>
                 <span>Cliente</span><span>Valor</span><span>Vencimento</span><span>Status</span><span />
               </div>
               {listaCobrar.length === 0 && (
-                <div className="py-12 text-center text-sm" style={{ color: 'var(--color-text-muted)', background: 'var(--color-surface-2)' }}>
-                  Nenhum cliente para este filtro.
+                <div className="py-16 px-6 text-center flex flex-col items-center gap-3" style={{ background: 'var(--color-surface-2)' }}>
+                  <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
+                    style={{ background: 'color-mix(in srgb, var(--color-brand) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--color-brand) 20%, transparent)' }}>
+                    <Users size={20} style={{ color: 'var(--color-brand)' }} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold" style={{ color: 'var(--color-text)' }}>
+                      {clientes.length === 0 ? 'Nenhum cliente ainda' : 'Nenhum cliente neste filtro'}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+                      {clientes.length === 0
+                        ? 'Cadastre seu primeiro cliente para começar a cobrar.'
+                        : 'Tente outro status ou limpe o filtro.'}
+                    </p>
+                  </div>
+                  {clientes.length === 0 ? (
+                    <button onClick={() => setShowModal(true)}
+                      className="mt-1 flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
+                      style={{ background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 14px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' }}>
+                      <Plus size={13} /> Cadastrar primeiro cliente
+                    </button>
+                  ) : (
+                    <button onClick={() => setFilterStatus('todos')}
+                      className="mt-1 px-4 py-1.5 rounded-xl text-xs font-semibold transition-all"
+                      style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}>
+                      Mostrar todos
+                    </button>
+                  )}
                 </div>
               )}
               {listaCobrar.map((c) => {
@@ -576,62 +818,183 @@ export default function CobrancasPage() {
 
       {/* Modal importar */}
       {showImport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onClick={() => setShowImport(false)}>
-          <div className="w-full max-w-lg rounded-2xl flex flex-col gap-5 p-6 animate-fade-in"
-            style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}
-            onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <FileSpreadsheet size={18} style={{ color: 'var(--color-brand)' }} />
-                <h2 className="text-lg font-bold" style={{ fontFamily: 'var(--font-display)' }}>Importar planilha</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setShowImport(false)}>
+          <div
+            className="w-full max-w-xl rounded-2xl overflow-hidden animate-fade-in"
+            style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', boxShadow: '0 24px 64px rgba(0,0,0,0.15)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* ── Header ── */}
+            <div className="px-6 py-4 flex items-center justify-between"
+              style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface-3)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+                  style={{ background: 'color-mix(in srgb, var(--color-brand) 12%, transparent)' }}>
+                  <FileSpreadsheet size={17} style={{ color: 'var(--color-brand)' }} />
+                </div>
+                <div>
+                  <p style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '1.05rem', color: 'var(--color-text)' }}>
+                    Importar lista de clientes
+                  </p>
+                  <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                    Cadastre vários clientes de uma vez através de uma planilha
+                  </p>
+                </div>
               </div>
-              <button onClick={() => setShowImport(false)} className="p-1.5 rounded-lg" style={{ color: 'var(--color-text-muted)' }}><X size={16} /></button>
-            </div>
-            <div className="p-3 rounded-xl text-xs" style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}>
-              <p className="font-semibold mb-1" style={{ color: 'var(--color-text)' }}>Formato esperado (CSV):</p>
-              <p>Colunas em ordem: <strong>Nome, Telefone, Valor, Dia de cobrança</strong></p>
-              <p className="mt-1 font-mono" style={{ color: 'var(--color-brand)' }}>João Silva, 11999990000, 150.00, 10</p>
-            </div>
-            <input ref={importInputRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleImportFile} />
-            {importRows.length === 0 ? (
-              <button onClick={() => importInputRef.current?.click()}
-                className="flex flex-col items-center justify-center gap-3 py-10 rounded-2xl border-2 border-dashed transition-all"
-                style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-muted)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.color = 'var(--color-brand)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.color = 'var(--color-text-muted)' }}>
-                <Upload size={28} />
-                <span className="text-sm font-medium">Clique para selecionar arquivo .csv</span>
+              <button onClick={() => setShowImport(false)} className="p-1.5 rounded-lg transition-all"
+                style={{ color: 'var(--color-text-muted)' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-surface-2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                <X size={16} />
               </button>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold">{importRows.length} cliente{importRows.length !== 1 ? 's' : ''} encontrado{importRows.length !== 1 ? 's' : ''}</span>
-                  <button onClick={() => importInputRef.current?.click()} className="text-xs px-2 py-1 rounded-lg" style={{ color: 'var(--color-brand)', border: '1px solid rgba(99,102,241,0.3)' }}>Trocar arquivo</button>
-                </div>
-                <div className="rounded-xl overflow-hidden max-h-48 overflow-y-auto" style={{ border: '1px solid var(--color-border)' }}>
-                  <div className="grid text-xs font-semibold uppercase px-3 py-2"
-                    style={{ gridTemplateColumns: '1fr 120px 80px 60px', background: 'var(--color-surface-3)', color: 'var(--color-text-muted)', borderBottom: '1px solid var(--color-border)' }}>
-                    <span>Nome</span><span>Telefone</span><span>Valor</span><span>Dia</span>
+            </div>
+
+            <div className="p-6 flex flex-col gap-4">
+
+              {/* ── PASSO 1: Baixar modelo ── */}
+              <div className="flex items-center justify-between px-4 py-3 rounded-xl"
+                style={{ background: 'color-mix(in srgb, var(--color-brand) 7%, transparent)', border: '1px dashed color-mix(in srgb, var(--color-brand) 35%, transparent)' }}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
+                    style={{ background: 'var(--color-brand)', color: 'white' }}>1</span>
+                  <div className="min-w-0">
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Baixe o modelo CSV</p>
+                    <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 1 }}>Abra no Excel ou Google Planilhas e preencha os clientes</p>
                   </div>
-                  {importRows.map((r, i) => (
-                    <div key={i} className="grid items-center px-3 py-2 text-xs"
-                      style={{ gridTemplateColumns: '1fr 120px 80px 60px', background: i % 2 === 0 ? 'var(--color-surface-2)' : 'var(--color-surface)', borderBottom: '1px solid var(--color-border)' }}>
-                      <span className="truncate font-medium">{r.nome}</span>
-                      <span className="truncate" style={{ color: 'var(--color-text-muted)' }}>{r.telefone || '—'}</span>
-                      <span style={{ color: 'var(--color-brand)' }}>{r.valor}</span>
-                      <span style={{ color: 'var(--color-text-muted)' }}>{r.dia_cobranca}</span>
-                    </div>
-                  ))}
                 </div>
-                <button onClick={handleImportSubmit} disabled={importLoading || importDone}
-                  className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all active:scale-[0.97]"
-                  style={{ background: importDone ? 'rgba(52,211,153,0.15)' : 'var(--color-brand)', color: importDone ? '#34d399' : 'white', border: importDone ? '1px solid rgba(52,211,153,0.3)' : 'none' }}>
-                  {importLoading ? <><Loader2 size={14} className="animate-spin" /> Importando...</>
-                   : importDone ? <><CheckCheck size={14} /> Importado com sucesso!</>
-                   : <><Upload size={14} /> Importar {importRows.length} cliente{importRows.length !== 1 ? 's' : ''}</>}
+                <button onClick={downloadClientesTemplate}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all active:scale-95 shrink-0"
+                  style={{ background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 14px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' }}>
+                  <Download size={13} /> Baixar
                 </button>
               </div>
-            )}
+
+              {/* ── PASSO 2: Formato esperado ── */}
+              <div className="flex items-start gap-3 px-4 py-3 rounded-xl"
+                style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)' }}>
+                <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-0.5"
+                  style={{ background: 'var(--color-surface-2)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}>2</span>
+                <div className="min-w-0 flex-1">
+                  <p style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>Preencha estas 4 colunas</p>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {['Nome', 'Telefone', 'Valor', 'Dia de cobrança'].map((c, i) => (
+                      <span key={c} className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                        style={{ background: 'var(--color-surface-2)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
+                        <span style={{ color: 'var(--color-text-muted)' }}>{String.fromCharCode(65 + i)}</span> · {c}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="font-mono mt-2" style={{ fontSize: '11px', color: 'var(--color-brand)' }}>
+                    Maria Silva,11999990000,350.00,5
+                  </p>
+                </div>
+              </div>
+
+              {/* ── PASSO 3: Upload ── */}
+              <input ref={importInputRef} type="file" accept=".csv,.txt,.xlsx,.xls" className="hidden" onChange={handleImportFile} />
+
+              {importRows.length === 0 ? (
+                <>
+                  <button
+                    onClick={() => importInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); setImportDragOver(true) }}
+                    onDragLeave={() => setImportDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault(); setImportDragOver(false)
+                      const f = e.dataTransfer.files?.[0]; if (f) processFile(f)
+                    }}
+                    className="flex flex-col items-center gap-3 py-10 rounded-xl border-2 border-dashed w-full transition-all"
+                    style={{
+                      borderColor: importError ? '#dc2626' : importDragOver ? 'var(--color-brand)' : 'var(--color-border)',
+                      color: importError ? '#dc2626' : importDragOver ? 'var(--color-brand)' : 'var(--color-text-muted)',
+                      background: importDragOver ? 'color-mix(in srgb, var(--color-brand) 6%, transparent)' : 'transparent',
+                    }}
+                    onMouseEnter={(e) => { if (!importError && !importDragOver) { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--color-brand) 4%, transparent)' } }}
+                    onMouseLeave={(e) => { if (!importError && !importDragOver) { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.color = 'var(--color-text-muted)'; e.currentTarget.style.background = 'transparent' } }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold"
+                        style={{ background: 'var(--color-surface-2)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}>3</span>
+                      <span style={{ fontSize: '13px', fontWeight: 700 }}>Suba o arquivo preenchido</span>
+                    </div>
+                    <Upload size={26} strokeWidth={1.5} />
+                    <div className="text-center">
+                      <p style={{ fontSize: '12px' }}>Clique aqui ou arraste o arquivo</p>
+                      <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 2 }}>Aceita .csv, .xlsx ou .xls</p>
+                    </div>
+                  </button>
+                  {importError && (
+                    <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl text-xs"
+                      style={{ background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.25)', color: '#dc2626' }}>
+                      <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold mb-0.5">Não foi possível ler o arquivo</p>
+                        <p style={{ opacity: 0.85 }}>{importError}</p>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {/* Resumo */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: '#16a34a' }}>
+                        <CheckCheck size={12} className="text-white" />
+                      </span>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--color-text)' }}>
+                        {importRows.length} cliente{importRows.length !== 1 ? 's' : ''} pronto{importRows.length !== 1 ? 's' : ''} pra importar
+                      </span>
+                    </div>
+                    <button onClick={() => importInputRef.current?.click()}
+                      style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}
+                      onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-brand)'}
+                      onMouseLeave={(e) => e.currentTarget.style.color = 'var(--color-text-muted)'}>
+                      Trocar arquivo
+                    </button>
+                  </div>
+
+                  {/* Preview */}
+                  <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border)', maxHeight: 240, overflowY: 'auto' }}>
+                    <table className="w-full table-fixed border-collapse text-xs">
+                      <thead>
+                        <tr style={{ background: 'var(--color-surface-3)', borderBottom: '1px solid var(--color-border)' }}>
+                          {['Nome', 'Telefone', 'Valor', 'Dia'].map((h, i) => (
+                            <th key={h} className="px-3 py-2 text-left font-semibold uppercase tracking-wider"
+                              style={{ color: 'var(--color-text-muted)', fontSize: '10px', width: i === 0 ? 'auto' : i === 1 ? '130px' : i === 2 ? '90px' : '50px' }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importRows.map((r, i) => (
+                          <tr key={i} style={{ borderBottom: '1px solid var(--color-border)', background: i % 2 === 0 ? 'var(--color-surface-2)' : 'var(--color-surface)' }}>
+                            <td className="px-3 py-2 truncate font-medium" style={{ color: 'var(--color-text)' }}>{r.nome}</td>
+                            <td className="px-3 py-2 truncate" style={{ color: 'var(--color-text-muted)' }}>{r.telefone || '—'}</td>
+                            <td className="px-3 py-2 font-bold" style={{ color: 'var(--color-brand)', fontFamily: 'var(--font-display)' }}>{r.valor}</td>
+                            <td className="px-3 py-2" style={{ color: 'var(--color-text-muted)' }}>{r.dia_cobranca}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Confirm */}
+                  <button onClick={handleImportSubmit} disabled={importLoading || importDone}
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all active:scale-[0.97]"
+                    style={importDone
+                      ? { background: 'rgba(22,163,74,0.1)', color: '#16a34a', border: '1px solid rgba(22,163,74,0.3)' }
+                      : { background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 14px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' }}>
+                    {importLoading ? <><Loader2 size={14} className="animate-spin" /> Importando...</>
+                     : importDone    ? <><CheckCheck size={14} /> Importado com sucesso!</>
+                     : <><Upload size={14} /> Importar {importRows.length} cliente{importRows.length !== 1 ? 's' : ''}</>}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

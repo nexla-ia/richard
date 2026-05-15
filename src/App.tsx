@@ -3,7 +3,8 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import LoginPage from '@/pages/LoginPage'
 import DashboardLayout from '@/pages/dashboard/DashboardLayout'
 import DashboardPage from '@/pages/dashboard/DashboardPage'
-import GestoesPage from '@/pages/dashboard/GestoesPage'
+import VoucherPage from '@/pages/dashboard/VoucherPage'
+import ClientesPage from '@/pages/dashboard/ClientesPage'
 import CobrancasPage from '@/pages/dashboard/CobrancasPage'
 import ConfiguracoesPage from '@/pages/dashboard/ConfiguracoesPage'
 import ProfilePage from '@/pages/ProfilePage'
@@ -61,7 +62,8 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<DashboardLayout />}>
               <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/dashboard/gestoes" element={<GestoesPage />} />
+              <Route path="/dashboard/voucher" element={<VoucherPage />} />
+              <Route path="/dashboard/clientes" element={<ClientesPage />} />
               <Route path="/dashboard/cobrancas" element={<CobrancasPage />} />
               <Route path="/dashboard/configuracoes" element={<ConfiguracoesPage />} />
               <Route path="/profile" element={<ProfilePage />} />

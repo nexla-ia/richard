@@ -2,14 +2,15 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { createClient } from '@/lib/supabase/client'
 import { useAuth } from '@/contexts/AuthContext'
 import {
-  LayoutDashboard, ClipboardList, CreditCard,
+  LayoutDashboard, Ticket, CreditCard, Users,
   Settings, Shield, LogOut, Camera, Menu, X,
 } from 'lucide-react'
 import { useState } from 'react'
 
 const navItems = [
   { href: '/dashboard',               label: 'Dashboard',     icon: LayoutDashboard },
-  { href: '/dashboard/gestoes',       label: 'Gestões',       icon: ClipboardList },
+  { href: '/dashboard/voucher',       label: 'Voucher',       icon: Ticket },
+  { href: '/dashboard/clientes',      label: 'Clientes',      icon: Users },
   { href: '/dashboard/cobrancas',     label: 'Cobranças',     icon: CreditCard },
   { href: '/dashboard/configuracoes', label: 'Configurações', icon: Settings },
   { href: '/admin',                   label: 'Admin',         icon: Shield, adminOnly: true },
@@ -37,7 +38,7 @@ export default function Sidebar() {
       <div className="px-5 pt-6 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
-            style={{ background: 'var(--color-brand)', boxShadow: '0 0 16px color-mix(in srgb, var(--color-brand) 40%, transparent)' }}>
+            style={{ background: 'var(--color-brand)', boxShadow: '0 4px 12px -4px color-mix(in srgb, var(--color-brand) 60%, transparent)' }}>
             <Camera size={15} className="text-white" />
           </div>
           <div>
@@ -70,7 +71,7 @@ export default function Sidebar() {
               {/* Indicador ativo */}
               {active && (
                 <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full"
-                  style={{ background: 'var(--color-brand)', boxShadow: '0 0 8px var(--color-brand)' }} />
+                  style={{ background: 'var(--color-brand)' }} />
               )}
               <Icon
                 size={16}

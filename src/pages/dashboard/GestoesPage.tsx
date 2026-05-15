@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Search, X, Trash2, Plus, Upload, Download, FileSpreadsheet, CheckCheck, Loader2 } from 'lucide-react'
+import { Search, X, Trash2, Plus, Upload, Download, FileSpreadsheet, CheckCheck, Loader2, AlertCircle } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { createClient } from '@/lib/supabase/client'
+import { cacheGet, cacheSet, cacheInvalidate } from '@/lib/cache'
 
 type Gestao = { id: number; nome: string; valor: number; data: string; feito: string }
 type EditingCell = { id: number; field: keyof Gestao } | null
@@ -82,8 +84,9 @@ function Cell({
 
 export default function GestoesPage() {
   const supabase = createClient()
-  const [rows, setRows]       = useState<Gestao[]>([])
-  const [loading, setLoading] = useState(true)
+  const cachedRows = cacheGet<Gestao[]>('gestoes')
+  const [rows, setRows]       = useState<Gestao[]>(cachedRows ?? [])
+  const [loading, setLoading] = useState(!cachedRows)
   const [search, setSearch]   = useState('')
   const [editing, setEditing] = useState<EditingCell>(null)
   const [editVal, setEditVal] = useState('')
@@ -100,20 +103,24 @@ export default function GestoesPage() {
   const [importRows, setImportRows]       = useState<Omit<Gestao, 'id'>[]>([])
   const [importLoading, setImportLoading] = useState(false)
   const [importDone, setImportDone]       = useState(false)
+  const [importError, setImportError]     = useState<string | null>(null)
+  const [feitoModal, setFeitoModal]       = useState<{ id: number; value: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   /* ── load ── */
   useEffect(() => {
     async function load() {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-      const { data } = await supabase.from('gestoes').select('*').eq('user_id', session.user.id).order('data', { ascending: false })
-      if (data?.length) setRows(data as Gestao[])
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) { setLoading(false); return }
+        const { data } = await (supabase as any).from('gestoes').select('*').eq('user_id', session.user.id).order('data', { ascending: false })
+        const list = (data as Gestao[]) ?? []
+        cacheSet('gestoes', list)
+        setRows(list)
+      } catch (err) { console.error('[Gestoes]', err) }
       setLoading(false)
     }
     load()
-    const ch = supabase.channel('gestoes-rt').on('postgres_changes', { event: '*', schema: 'public', table: 'gestoes' }, load).subscribe()
-    return () => { supabase.removeChannel(ch) }
   }, [])
 
   useEffect(() => { if (editing) inputRef.current?.focus() }, [editing])
@@ -140,7 +147,21 @@ export default function GestoesPage() {
 
   /* ── edit ── */
   function startEdit(id: number, field: keyof Gestao, val: string | number) {
+    // Campo "feito" abre modal grande (texto longo)
+    if (field === 'feito') {
+      setFeitoModal({ id, value: String(val ?? '') })
+      return
+    }
     setEditing({ id, field }); setEditVal(String(val ?? ''))
+  }
+
+  async function saveFeito() {
+    if (!feitoModal) return
+    const { id, value } = feitoModal
+    setRows((prev) => prev.map((r) => r.id === id ? { ...r, feito: value } : r))
+    setFeitoModal(null)
+    await (supabase as any).from('gestoes').update({ feito: value }).eq('id', id)
+    cacheInvalidate('gestoes'); cacheInvalidate('dashboard')
   }
   async function commitEdit() {
     if (!editing) return
@@ -153,10 +174,15 @@ export default function GestoesPage() {
       updated = next; return next
     }))
     setEditing(null)
-    if (updated) { const { nome, valor, data, feito } = updated as Gestao; await (supabase as any).from('gestoes').update({ nome, valor, data, feito }).eq('id', editing.id) }
+    if (updated) {
+      const { nome, valor, data, feito } = updated as Gestao
+      await (supabase as any).from('gestoes').update({ nome, valor, data, feito }).eq('id', editing.id)
+      cacheInvalidate('gestoes'); cacheInvalidate('dashboard')
+    }
   }
   function tabNext(id: number, field: keyof Gestao) {
-    const fields: (keyof Gestao)[] = ['nome', 'valor', 'data', 'feito']
+    // Não avança pro feito (abriria modal automaticamente — confuso)
+    const fields: (keyof Gestao)[] = ['nome', 'valor', 'data']
     const next = fields[fields.indexOf(field) + 1]
     if (next) { const row = rows.find((r) => r.id === id); if (row) setTimeout(() => startEdit(id, next, row[next]), 30) }
   }
@@ -168,28 +194,80 @@ export default function GestoesPage() {
     const today = new Date().toISOString().slice(0, 10)
     const date = activeMonth && !today.startsWith(activeMonth) ? `${activeMonth}-01` : today
     const { data, error } = await (supabase as any).from('gestoes').insert({ user_id: user.id, nome: '', valor: 0, data: date, feito: '' }).select().single()
-    if (!error && data) { setRows((p) => [data as Gestao, ...p]); setTimeout(() => startEdit((data as Gestao).id, 'nome', ''), 50) }
+    if (!error && data) {
+      setRows((p) => [data as Gestao, ...p])
+      cacheInvalidate('gestoes'); cacheInvalidate('dashboard')
+      setTimeout(() => startEdit((data as Gestao).id, 'nome', ''), 50)
+    }
   }
   async function deleteRow(id: number) {
     setRows((p) => p.filter((r) => r.id !== id))
-    await supabase.from('gestoes').delete().eq('id', id)
+    await (supabase as any).from('gestoes').delete().eq('id', id)
+    cacheInvalidate('gestoes'); cacheInvalidate('dashboard')
   }
 
-  /* ── import ── */
+  /* ── import (CSV + XLSX) ── */
+  function parseDateCell(v: unknown): string {
+    if (v == null || v === '') return new Date().toISOString().slice(0, 10)
+    // Excel data serial number
+    if (typeof v === 'number') {
+      const d = XLSX.SSF.parse_date_code(v)
+      if (d) return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`
+    }
+    const s = String(v).trim()
+    // ISO YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+    // DD/MM/YYYY
+    const br = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/)
+    if (br) return `${br[3]}-${String(br[2]).padStart(2, '0')}-${String(br[1]).padStart(2, '0')}`
+    return new Date().toISOString().slice(0, 10)
+  }
+  function parseValueCell(v: unknown): number {
+    if (typeof v === 'number') return v
+    const s = String(v ?? '').replace(/[R$\s]/g, '').replace(/\./g, '').replace(',', '.')
+    return parseFloat(s) || 0
+  }
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]; if (!file) return
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImportError(null)
     const reader = new FileReader()
     reader.onload = (ev) => {
-      const text = ev.target?.result as string
-      const lines = text.split(/\r?\n/).filter((l) => l.trim())
-      const start = isNaN(parseFloat(lines[0]?.split(/[,;]/)[1]?.replace(',', '.'))) ? 1 : 0
-      const parsed = lines.slice(start).map((line) => {
-        const cols = line.split(/[,;]/).map((c) => c.trim().replace(/^"|"$/g, ''))
-        return { nome: cols[0] ?? '', valor: parseFloat((cols[1] ?? '0').replace(',', '.')) || 0, data: cols[2] ?? new Date().toISOString().slice(0, 10), feito: cols[3] ?? '' }
-      }).filter((r) => r.nome)
-      setImportRows(parsed); setImportDone(false)
+      try {
+        const buf = ev.target?.result
+        const wb  = XLSX.read(buf, { type: 'array', cellDates: false })
+        const ws  = wb.Sheets[wb.SheetNames[0]]
+        if (!ws) throw new Error('Planilha vazia')
+        const matrix: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' })
+
+        // remove linhas vazias
+        const rowsArr = matrix.filter((r) => r.some((c) => String(c ?? '').trim()))
+        if (rowsArr.length === 0) throw new Error('Sem dados na planilha')
+
+        // detecta cabeçalho (primeira linha sem número na col B/valor)
+        const skipHeader = isNaN(parseFloat(String(rowsArr[0][1] ?? '').replace(',', '.')))
+        const dataRows   = skipHeader ? rowsArr.slice(1) : rowsArr
+
+        const parsed = dataRows.map((cols) => ({
+          nome:  String(cols[0] ?? '').trim(),
+          valor: parseValueCell(cols[1]),
+          data:  parseDateCell(cols[2]),
+          feito: String(cols[3] ?? '').trim(),
+        })).filter((r) => r.nome)
+
+        if (parsed.length === 0) throw new Error('Nenhuma linha válida encontrada. Verifique se o arquivo tem as colunas: Nome, Valor, Data, O que foi feito.')
+
+        setImportRows(parsed)
+        setImportDone(false)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Erro ao ler arquivo'
+        setImportError(msg)
+        setImportRows([])
+      }
     }
-    reader.readAsText(file); e.target.value = ''
+    reader.onerror = () => setImportError('Não foi possível ler o arquivo.')
+    reader.readAsArrayBuffer(file)
+    e.target.value = ''
   }
   async function doImport() {
     if (!importRows.length) return
@@ -207,7 +285,7 @@ export default function GestoesPage() {
     <div className="flex flex-col h-full gap-0" style={{ minHeight: 0 }}>
 
       {/* ── Top bar ── */}
-      <div className="flex items-end justify-between pb-5">
+      <div className="flex items-end justify-between pb-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] mb-1" style={{ color: 'var(--color-brand)', letterSpacing: '0.2em' }}>
             Gestão Financeira
@@ -215,6 +293,9 @@ export default function GestoesPage() {
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '2.25rem', fontWeight: 800, lineHeight: 1, color: 'var(--color-text)', letterSpacing: '-0.02em' }}>
             Gestões
           </h1>
+          <p className="text-sm mt-2" style={{ color: 'var(--color-text-muted)' }}>
+            Registre cada trabalho feito — nome do cliente, valor cobrado, data e o que foi feito.
+          </p>
         </div>
 
         {/* Total + ações */}
@@ -231,7 +312,7 @@ export default function GestoesPage() {
           <div className="w-px h-10 self-center" style={{ background: 'var(--color-border)' }} />
           <div className="flex items-center gap-2">
             <button
-              onClick={() => { setShowImport(true); setImportRows([]); setImportDone(false) }}
+              onClick={() => { setShowImport(true); setImportRows([]); setImportDone(false); setImportError(null) }}
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}
               onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.borderColor = 'var(--color-brand)' }}
@@ -254,62 +335,92 @@ export default function GestoesPage() {
       <div className="flex gap-4 flex-1 min-h-0">
 
         {/* ── Sidebar de meses ── */}
-        <div className="w-48 shrink-0 flex flex-col gap-1 overflow-y-auto pr-1"
-          style={{ scrollbarWidth: 'none' }}>
-          <p className="text-[10px] font-bold uppercase tracking-[0.18em] px-1 mb-2" style={{ color: 'var(--color-text-muted)' }}>
-            Períodos
-          </p>
-          {allMonths.length === 0 && !loading && (
-            <p className="text-xs px-2" style={{ color: 'var(--color-border)' }}>Sem registros</p>
-          )}
-          {loading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="rounded-xl px-3 py-3 animate-pulse" style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', opacity: 1 - i * 0.2 }}>
-                  <span className="skeleton h-3 w-16 block mb-2" />
-                  <span className="skeleton h-2.5 w-20 block mb-2" />
-                  <span className="skeleton h-1 w-full block rounded-full" />
+        <aside className="w-56 shrink-0 flex flex-col rounded-2xl overflow-hidden"
+          style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)' }}>
+
+          {/* Header sidebar */}
+          <div className="px-4 py-3 flex items-center justify-between"
+            style={{ background: 'var(--color-surface-3)', borderBottom: '1px solid var(--color-border)' }}>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: 'var(--color-text-muted)' }}>
+              Períodos
+            </p>
+            {allMonths.length > 0 && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                style={{ background: 'var(--color-surface-2)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}>
+                {allMonths.length}
+              </span>
+            )}
+          </div>
+
+          {/* Lista */}
+          <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
+            {loading
+              ? Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="rounded-xl px-3 py-2.5" style={{ background: 'var(--color-surface-3)' }}>
+                    <span className="skeleton h-3 w-16 block mb-1.5" />
+                    <span className="skeleton h-2 w-full block rounded-full mb-1.5" />
+                    <span className="skeleton h-3 w-20 block" />
+                  </div>
+                ))
+              : allMonths.length === 0
+              ? (
+                <div className="flex flex-col items-center justify-center py-10 px-2 text-center">
+                  <span className="text-2xl mb-2 opacity-40">📅</span>
+                  <p className="text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Nenhum período</p>
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--color-text-muted)', opacity: 0.7 }}>Adicione uma linha para começar</p>
                 </div>
-              ))
-            : allMonths.map((ym, i) => {
-                const { month, year } = monthLabel(ym)
-                const t = monthTotals.get(ym) ?? 0
-                const pct = Math.round((t / maxTotal) * 100)
-                const isActive = i === activeIdx
-                return (
-                  <button
-                    key={ym}
-                    onClick={() => setActiveIdx(i)}
-                    className="text-left rounded-xl px-3 py-3 transition-all relative overflow-hidden"
-                    style={{
-                      background: isActive ? 'color-mix(in srgb, var(--color-brand) 12%, var(--color-surface-2))' : 'var(--color-surface-2)',
-                      border: `1px solid ${isActive ? 'color-mix(in srgb, var(--color-brand) 50%, transparent)' : 'var(--color-border)'}`,
-                      boxShadow: isActive ? '0 0 16px color-mix(in srgb, var(--color-brand) 15%, transparent)' : 'none',
-                    }}
-                  >
-                    {/* Barra de progresso de fundo */}
-                    <div className="absolute inset-0 left-0 pointer-events-none"
-                      style={{ width: `${pct}%`, background: isActive ? 'color-mix(in srgb, var(--color-brand) 6%, transparent)' : 'color-mix(in srgb, var(--color-border) 30%, transparent)', transition: 'width 0.4s ease' }} />
+              )
+              : allMonths.map((ym, i) => {
+                  const { month, year } = monthLabel(ym)
+                  const t = monthTotals.get(ym) ?? 0
+                  const pct = Math.max(4, Math.round((t / maxTotal) * 100))
+                  const isActive = i === activeIdx
+                  return (
+                    <button
+                      key={ym}
+                      onClick={() => setActiveIdx(i)}
+                      className="text-left rounded-xl px-3 py-2.5 transition-all relative group"
+                      style={{
+                        background: isActive ? 'var(--color-brand)' : 'transparent',
+                        boxShadow: isActive ? '0 4px 12px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' : 'none',
+                      }}
+                      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--color-surface-3)' }}
+                      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
+                    >
+                      {/* Topo: mês + ano */}
+                      <div className="flex items-baseline justify-between mb-2">
+                        <p className="text-sm font-bold leading-none capitalize"
+                          style={{ fontFamily: 'var(--font-display)', color: isActive ? 'white' : 'var(--color-text)', letterSpacing: '-0.01em' }}>
+                          {month}
+                        </p>
+                        <span className="text-[10px] font-medium" style={{ color: isActive ? 'rgba(255,255,255,0.7)' : 'var(--color-text-muted)' }}>
+                          {year}
+                        </span>
+                      </div>
 
-                    {/* Indicador lateral */}
-                    {isActive && (
-                      <div className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full"
-                        style={{ background: 'var(--color-brand)', boxShadow: '0 0 8px var(--color-brand)' }} />
-                    )}
+                      {/* Mini barra de progresso */}
+                      <div className="h-1 rounded-full overflow-hidden mb-2"
+                        style={{ background: isActive ? 'rgba(255,255,255,0.2)' : 'var(--color-surface-3)' }}>
+                        <div className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${pct}%`,
+                            background: isActive ? 'white' : 'var(--color-brand)',
+                            opacity: isActive ? 0.9 : 0.6,
+                          }} />
+                      </div>
 
-                    <div className="relative z-10">
-                      <p className="text-sm font-bold leading-none mb-0.5"
-                        style={{ fontFamily: 'var(--font-display)', color: isActive ? 'var(--color-text)' : 'var(--color-text-muted)' }}>
-                        {month}
-                      </p>
-                      <p className="text-[10px] mb-2" style={{ color: 'var(--color-text-muted)' }}>{year}</p>
-                      <p className="text-xs font-semibold" style={{ color: isActive ? 'var(--color-brand)' : 'var(--color-text-muted)', fontFamily: 'var(--font-display)' }}>
-                        {fmt(t)}
-                      </p>
-                    </div>
-                  </button>
-                )
-              })}
-        </div>
+                      {/* Total + contagem */}
+                      <div className="flex items-baseline justify-between">
+                        <p className="text-sm font-bold leading-none"
+                          style={{ fontFamily: 'var(--font-display)', color: isActive ? 'white' : 'var(--color-brand)' }}>
+                          {fmt(t)}
+                        </p>
+                      </div>
+                    </button>
+                  )
+                })}
+          </div>
+        </aside>
 
         {/* ── Painel principal ── */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 rounded-2xl overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
@@ -468,6 +579,79 @@ export default function GestoesPage() {
         </div>
       </div>
 
+      {/* ══ Modal: editar "O que foi feito" ══ */}
+      {feitoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setFeitoModal(null)}>
+          <div className="w-full max-w-xl rounded-2xl overflow-hidden animate-fade-in"
+            style={{ background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', boxShadow: '0 24px 64px rgba(0,0,0,0.15)' }}
+            onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface-3)' }}>
+              <div>
+                <p style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '1.05rem', color: 'var(--color-text)' }}>
+                  Descrição do trabalho
+                </p>
+                <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                  Detalhe o que foi feito — sem limite de tamanho
+                </p>
+              </div>
+              <button onClick={() => setFeitoModal(null)} className="p-1.5 rounded-lg transition-all"
+                style={{ color: 'var(--color-text-muted)' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-surface-2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6">
+              <textarea
+                autoFocus
+                value={feitoModal.value}
+                onChange={(e) => setFeitoModal({ ...feitoModal, value: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') { e.preventDefault(); setFeitoModal(null) }
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveFeito() }
+                }}
+                placeholder="Ex.: Ensaio fotográfico de família, 2h de sessão, 50 fotos editadas, entrega em galeria online…"
+                rows={8}
+                className="w-full px-4 py-3 rounded-xl text-sm outline-none resize-y leading-relaxed"
+                style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', color: 'var(--color-text)', minHeight: 160 }}
+                onFocus={(e) => { e.target.style.borderColor = 'var(--color-brand)'; e.target.style.boxShadow = '0 0 0 3px color-mix(in srgb, var(--color-brand) 12%, transparent)' }}
+                onBlur={(e)  => { e.target.style.borderColor = 'var(--color-border)'; e.target.style.boxShadow = 'none' }}
+              />
+              <div className="flex items-center justify-between mt-2 px-1">
+                <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  {feitoModal.value.length} caracteres
+                </span>
+                <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  <kbd style={{ background: 'var(--color-surface-3)', padding: '1px 5px', borderRadius: 3, fontSize: 10 }}>Ctrl + Enter</kbd> salvar
+                </span>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 flex items-center justify-end gap-2"
+              style={{ background: 'var(--color-surface-3)', borderTop: '1px solid var(--color-border)' }}>
+              <button onClick={() => setFeitoModal(null)}
+                className="px-4 py-2 rounded-xl text-sm font-medium transition-all"
+                style={{ background: 'transparent', color: 'var(--color-text-muted)' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-surface-2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+                Cancelar
+              </button>
+              <button onClick={saveFeito}
+                className="px-5 py-2 rounded-xl text-sm font-bold transition-all active:scale-[0.97]"
+                style={{ background: 'var(--color-brand)', color: 'white', boxShadow: '0 4px 14px -4px color-mix(in srgb, var(--color-brand) 50%, transparent)' }}>
+                Salvar descrição
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══ Modal Importar ══ */}
       {showImport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -508,20 +692,32 @@ export default function GestoesPage() {
               </div>
 
               {/* Upload */}
-              <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
+              <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls" className="hidden" onChange={handleFile} />
 
               {importRows.length === 0 ? (
-                <button onClick={() => fileRef.current?.click()}
-                  className="flex flex-col items-center gap-3 py-12 rounded-xl border-2 border-dashed w-full transition-all"
-                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-muted)' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--color-brand) 4%, transparent)' }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.color = 'var(--color-text-muted)'; e.currentTarget.style.background = 'transparent' }}>
-                  <Upload size={28} strokeWidth={1.5} />
-                  <div className="text-center">
-                    <p style={{ fontSize: '13px', fontWeight: 600 }}>Selecionar arquivo</p>
-                    <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 2 }}>.csv ou .txt</p>
-                  </div>
-                </button>
+                <>
+                  <button onClick={() => fileRef.current?.click()}
+                    className="flex flex-col items-center gap-3 py-12 rounded-xl border-2 border-dashed w-full transition-all"
+                    style={{ borderColor: importError ? '#dc2626' : 'var(--color-border)', color: importError ? '#dc2626' : 'var(--color-text-muted)' }}
+                    onMouseEnter={(e) => { if (!importError) { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.color = 'var(--color-brand)'; e.currentTarget.style.background = 'color-mix(in srgb, var(--color-brand) 4%, transparent)' } }}
+                    onMouseLeave={(e) => { if (!importError) { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.color = 'var(--color-text-muted)'; e.currentTarget.style.background = 'transparent' } }}>
+                    <Upload size={28} strokeWidth={1.5} />
+                    <div className="text-center">
+                      <p style={{ fontSize: '13px', fontWeight: 600 }}>Selecionar arquivo</p>
+                      <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: 2 }}>.csv, .xlsx ou .xls</p>
+                    </div>
+                  </button>
+                  {importError && (
+                    <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl text-xs"
+                      style={{ background: 'rgba(220,38,38,0.06)', border: '1px solid rgba(220,38,38,0.25)', color: '#dc2626' }}>
+                      <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold mb-0.5">Não foi possível ler o arquivo</p>
+                        <p style={{ opacity: 0.85 }}>{importError}</p>
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="flex flex-col gap-3">
                   <div className="flex items-center justify-between">

@@ -3,15 +3,17 @@
 @theme {
   --color-brand: #6366f1;
   --color-brand-dark: #4f46e5;
-  --color-surface: #0f0f13;
-  --color-surface-2: #18181f;
-  --color-surface-3: #222230;
-  --color-border: #2e2e3f;
-  --color-text: #e8e8f0;
-  --color-text-muted: #8888aa;
+
+  /* ── Light palette ── */
+  --color-surface:    #fafaf7;  /* off-white quente (bg) */
+  --color-surface-2:  #ffffff;  /* papel branco (cards) */
+  --color-surface-3:  #f5f4ef;  /* alt sutil (header de cards, hover) */
+  --color-border:     #e8e6df;  /* borda papel */
+  --color-text:       #1a1a1a;  /* texto principal */
+  --color-text-muted: #6b6b6b;  /* texto secundário */
 
   --font-sans: "DM Sans", sans-serif;
-  --font-display: "Syne", sans-serif;
+  --font-display: "Bricolage Grotesque", sans-serif;
 }
 
 /* ── Animações ── */
@@ -30,19 +32,14 @@
   100% { background-position: 700px 0;  }
 }
 
-.animate-fade-in {
-  animation: fade-in 0.28s ease-out both;
-}
-
-.animate-fade-in-fast {
-  animation: fade-in-fast 0.18s ease-out both;
-}
+.animate-fade-in       { animation: fade-in      0.28s ease-out both; }
+.animate-fade-in-fast  { animation: fade-in-fast 0.18s ease-out both; }
 
 .skeleton {
   background: linear-gradient(
     90deg,
     var(--color-surface-3) 25%,
-    color-mix(in srgb, var(--color-border) 60%, var(--color-surface-3)) 50%,
+    var(--color-border)    50%,
     var(--color-surface-3) 75%
   );
   background-size: 700px 100%;
@@ -52,13 +49,8 @@
 }
 
 @layer base {
-  * {
-    box-sizing: border-box;
-  }
-
-  html {
-    scroll-behavior: smooth;
-  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
 
   body {
     background-color: var(--color-surface);
@@ -72,16 +64,8 @@
     color: white;
   }
 
-  ::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: var(--color-surface);
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: var(--color-border);
-    border-radius: 3px;
-  }
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #d8d6cf; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #b8b6af; }
 }
